@@ -36,6 +36,18 @@ const WALL_H = 8;         // wall height in 3D units
 const FLOOR_CELL = 100;   // floor grid cell size in 2D pixels
 const MOUSE_SENS = 0.002; // mouse look sensitivity
 
+// Fluid physics constants
+const FLUID_BASE_DRAG = 3.2;       // base linear drag per second
+const FLUID_SPEED_DRAG = 0.00025;  // quadratic drag coefficient (per speed² per second)
+const INPUT_SMOOTH_K = 0.12;       // input lerp amount per 1/60 s frame
+const CAM_ROLL_SENS = 0.30;        // yaw-rate → roll mapping factor
+const CAM_ROLL_MAX = 4 * Math.PI / 180;  // ±4° max roll
+const CAM_PITCH_MAX = 5 * Math.PI / 180; // ±5° max pitch from buoyancy
+const CAM_ROLL_RETURN = 5.0;       // roll lerp-back rate (per second)
+const CAM_PITCH_RETURN = 3.5;      // pitch lerp-back rate (per second)
+const BUOY_FREQ = 0.4;             // buoyancy sine frequency (rad/s)
+const BUOY_AMP = 0.038;            // buoyancy Y amplitude (Three.js units)
+
 // Colours (still used in HUD canvas)
 const C_ENV = "#00FFFF";
 const C_SAFE = "#00FF88";
@@ -1114,6 +1126,13 @@ class EchoesGame {
   private yaw = Math.PI;   // start facing into tunnel (+Z)
   private pitch = 0;
 
+  // Fluid physics
+  private smoothFwd = 0;        // smoothed forward/back input [-1..1]
+  private smoothSide = 0;       // smoothed strafe input [-1..1]
+  private prevYaw = Math.PI;    // yaw from previous frame (for delta-yaw)
+  private cameraRoll = 0;       // current camera roll offset (radians)
+  private cameraPitchOff = 0;   // current camera pitch offset from buoyancy (radians)
+
   // Audio
   private audio = new AudioSys();
   private audioReady = false;
@@ -1364,6 +1383,9 @@ class EchoesGame {
     this.camX = def.playerStart.x; this.camY = def.playerStart.y;
     this.yaw = Math.PI;   // face +Z (into tunnel)
     this.pitch = 0;
+    this.smoothFwd = 0; this.smoothSide = 0;
+    this.prevYaw = Math.PI;
+    this.cameraRoll = 0; this.cameraPitchOff = 0;
 
     // Build 3D scene
     this.build3DScene(def);
@@ -1654,6 +1676,7 @@ class EchoesGame {
     this.lvlTime += dt / 1000;
     this.updateDialogue();
     this.updatePlayer(dt);
+    this.updateCameraPhysics(dt);
     this.updateEnemies(dt);
     this.updatePings(dt);
     this.updateFlares(dt);
@@ -1680,34 +1703,79 @@ class EchoesGame {
   }
 
   private updatePlayer(dt: number) {
-    const def = this.lvlDef!; const dtS = dt / 1000;
+    const def = this.lvlDef!;
+    const dtS = dt / 1000;
     const boosting = this.keys["ShiftLeft"] || this.keys["ShiftRight"];
+
+    // ── Step 1: Raw key input axes ([-1, 0, 1]) ──
+    const rawFwd  = (this.keys["KeyW"] || this.keys["ArrowUp"]    ? 1 : 0)
+                  - (this.keys["KeyS"] || this.keys["ArrowDown"]  ? 1 : 0);
+    const rawSide = (this.keys["KeyD"] || this.keys["ArrowRight"] ? 1 : 0)
+                  - (this.keys["KeyA"] || this.keys["ArrowLeft"]  ? 1 : 0);
+
+    // ── Step 2: Input smoothing — lerp toward raw each frame ──
+    // Scale lerp rate to be frame-rate independent (~0.12 per 1/60 s frame)
+    const smoothRate = 1 - Math.pow(1 - INPUT_SMOOTH_K, dtS * 60);
+    this.smoothFwd  += (rawFwd  - this.smoothFwd)  * smoothRate;
+    this.smoothSide += (rawSide - this.smoothSide) * smoothRate;
+
+    // ── Step 3: Direction vectors from current yaw ──
+    // forward3D = (-sin(yaw), 0, -cos(yaw)); mapped to 2D: fwdX, fwdY
+    const fwdX =  -Math.sin(this.yaw);
+    const fwdY =  -Math.cos(this.yaw);
+    const rgtX =   Math.cos(this.yaw);
+    const rgtY =  -Math.sin(this.yaw);
+
+    // ── Step 4: Apply force from smoothed input ──
     const spd = PLAYER_SPEED * (boosting ? PLAYER_BOOST_MULT : 1);
+    const forceX = (fwdX * this.smoothFwd + rgtX * this.smoothSide) * spd;
+    const forceY = (fwdY * this.smoothFwd + rgtY * this.smoothSide) * spd;
+    this.pvx += forceX * dtS;
+    this.pvy += forceY * dtS;
 
-    // Standard FPS controls: W=forward, S=back, A=strafe-left, D=strafe-right
-    // Three.js default camera forward is (0,0,-1); rotated by yaw around Y =>
-    //   forward3D = (-sin(yaw), 0, -cos(yaw))
-    //   right3D   = ( cos(yaw), 0, -sin(yaw))
-    // 2D world maps Z->Y, so 2D forward = (-sin(yaw), -cos(yaw))
-    const fwdX  = -Math.sin(this.yaw);
-    const fwdY  = -Math.cos(this.yaw);
-    const rgtX  =  Math.cos(this.yaw);
-    const rgtY  = -Math.sin(this.yaw);
-    let ax = 0, ay = 0;
-    if (this.keys["KeyW"] || this.keys["ArrowUp"])    { ax += fwdX * spd; ay += fwdY * spd; }
-    if (this.keys["KeyS"] || this.keys["ArrowDown"])  { ax -= fwdX * spd; ay -= fwdY * spd; }
-    if (this.keys["KeyA"] || this.keys["ArrowLeft"])  { ax -= rgtX * spd; ay -= rgtY * spd; }
-    if (this.keys["KeyD"] || this.keys["ArrowRight"]) { ax += rgtX * spd; ay += rgtY * spd; }
+    // ── Step 5: Non-linear drag — base drag + speed-squared term ──
+    const speed = Math.hypot(this.pvx, this.pvy);
+    const dragRate = FLUID_BASE_DRAG + FLUID_SPEED_DRAG * speed * speed;
+    const dragFactor = Math.max(0, 1 - dragRate * dtS);
+    this.pvx *= dragFactor;
+    this.pvy *= dragFactor;
 
-    this.pvx += ax * dtS; this.pvy += ay * dtS;
-    this.pvx *= PLAYER_FRICTION; this.pvy *= PLAYER_FRICTION;
-    if (boosting && (ax || ay)) this.noise = Math.min(100, this.noise + 2.5 * dtS);
+    // Boost noise while sprinting with input
+    if (boosting && (rawFwd || rawSide)) this.noise = Math.min(100, this.noise + 2.5 * dtS);
 
     const nx = this.px + this.pvx * dtS;
     const ny = this.py + this.pvy * dtS;
     const [rx, ry] = this.collide(nx, ny, PLAYER_SIZE, def.obstacles);
     this.px = Math.max(PLAYER_SIZE + 2, Math.min(def.worldW - PLAYER_SIZE - 2, rx));
     this.py = Math.max(PLAYER_SIZE + 2, Math.min(def.worldH - PLAYER_SIZE - 2, ry));
+  }
+
+  private updateCameraPhysics(dt: number) {
+    const dtS = dt / 1000;
+    // Guard against zero-delta frames (e.g. tab backgrounded) to prevent NaN
+    if (dtS <= 0) return;
+
+    // ── Roll: proportional to turn rate (delta yaw per second) ──
+    const deltaYaw = this.yaw - this.prevYaw;
+    this.prevYaw = this.yaw;
+    // Only update prevYaw each physics tick; deltaYaw is yaw change this frame
+    const yawRate = deltaYaw / dtS;  // radians per second
+    const targetRoll = Math.max(-CAM_ROLL_MAX, Math.min(CAM_ROLL_MAX, -yawRate * CAM_ROLL_SENS));
+    // Lerp roll toward target when turning, back to 0 when not
+    const rollLerp = Math.min(1, CAM_ROLL_RETURN * dtS);
+    this.cameraRoll += (targetRoll - this.cameraRoll) * rollLerp;
+
+    // ── Buoyancy drift: sinusoidal Y offset when no vertical input ──
+    // lvlTime is in seconds; BUOY_FREQ in rad/s
+    // Velocity of buoyancy position = d/dt [BUOY_AMP * sin(BUOY_FREQ * t)]
+    //                                = BUOY_AMP * BUOY_FREQ * cos(BUOY_FREQ * t)
+    const buoyancyVel = BUOY_AMP * BUOY_FREQ * Math.cos(BUOY_FREQ * this.lvlTime);
+
+    // ── Pitch: map buoyancy vertical velocity to a gentle nose pitch ──
+    const velScale = CAM_PITCH_MAX / (BUOY_AMP * BUOY_FREQ);
+    const targetPitch = Math.max(-CAM_PITCH_MAX, Math.min(CAM_PITCH_MAX, buoyancyVel * velScale));
+    const pitchLerp = Math.min(1, CAM_PITCH_RETURN * dtS);
+    this.cameraPitchOff += (targetPitch - this.cameraPitchOff) * pitchLerp;
   }
 
   private collide(x: number, y: number, r: number, obs: Rect[]): [number, number] {
@@ -2396,10 +2464,12 @@ class EchoesGame {
       return;
     }
 
-    // Update camera from 2D position
-    this.camera.position.set(this.px * WS, EYE_H, this.py * WS);
+    // Update camera from 2D position + buoyancy Y drift + roll/pitch offsets
+    const buoyancyY = BUOY_AMP * Math.sin(BUOY_FREQ * this.lvlTime);
+    this.camera.position.set(this.px * WS, EYE_H + buoyancyY, this.py * WS);
     this.camera.rotation.y = this.yaw;
-    this.camera.rotation.x = this.pitch;
+    this.camera.rotation.x = this.pitch + this.cameraPitchOff;
+    this.camera.rotation.z = this.cameraRoll;
 
     // Rotate radar sweep
     if (this.cockpitSweep) this.cockpitSweep.rotation.z += 0.025;
