@@ -375,6 +375,8 @@ class AudioSys {
   // Ambient creak gain — always-on low volume, independent of depth
   private ambientCreakGain: GainNode | null = null;
   private ambientCreakTimer: ReturnType<typeof setTimeout> | null = null;
+  private _ambientCreakMinDelay = 7000;
+  private _ambientCreakMaxDelay = 15000;
 
   private getAmbientCreakGain(): GainNode {
     if (!this.ambientCreakGain && this.ctx && this.master) {
@@ -392,10 +394,26 @@ class AudioSys {
     }
   }
 
+  setAmbientCreakLevel(lvlIdx: number) {
+    if (!this.ctx) return;
+    const g = this.getAmbientCreakGain();
+    // Level 0 (Alpha): subtle creaks, long gaps
+    // Level 1 (Beta): moderate — pressure building
+    // Level 2 (Gamma): frequent & louder — maximum depth stress
+    const cfg = [
+      { gain: 0.12, minDelay: 12000, maxDelay: 22000 },
+      { gain: 0.22, minDelay:  8000, maxDelay: 16000 },
+      { gain: 0.34, minDelay:  5000, maxDelay: 11000 },
+    ][lvlIdx] ?? { gain: 0.12, minDelay: 12000, maxDelay: 22000 };
+    this._ambientCreakMinDelay = cfg.minDelay;
+    this._ambientCreakMaxDelay = cfg.maxDelay;
+    g.gain.linearRampToValueAtTime(cfg.gain, this.ctx.currentTime + 1.5);
+  }
+
   private scheduleAmbientCreak() {
     if (!this.ctx) return;
-    // Random interval 7–22 s between ambient hull sounds
-    const delay = 7000 + Math.random() * 15000;
+    // Random interval driven by level — tighter at deeper sectors
+    const delay = this._ambientCreakMinDelay + Math.random() * (this._ambientCreakMaxDelay - this._ambientCreakMinDelay);
     this.ambientCreakTimer = setTimeout(() => {
       this.ambientCreakTimer = null;
       if (!this.ctx || !this.master) return;
@@ -474,21 +492,51 @@ class AudioSys {
     osc.start(t0); osc.stop(t0 + dur);
     osc.onended = () => { try { osc.disconnect(); lp.disconnect(); env.disconnect(); } catch { /* gone */ } };
   }
+  private breathGain: GainNode | null = null;
+  private breathFlt: BiquadFilterNode | null = null;
+  private breathTimer: ReturnType<typeof setTimeout> | null = null;
+  private breathInterval = 4500;
+  private _breathPeak = 0.06;
+  private lastBreathTier = -1;
+
+  resetBreathingTier() { this.lastBreathTier = -1; }
+
   startBreathing() {
     if (!this.ctx || !this.master) return;
-    const g = this.ctx.createGain(); g.gain.value = 0;
+    this.breathGain = this.ctx.createGain(); this.breathGain.gain.value = 0;
+    this.breathFlt = this.ctx.createBiquadFilter(); this.breathFlt.type = "bandpass"; this.breathFlt.frequency.value = 340; this.breathFlt.Q.value = 2;
     const osc = this.ctx.createOscillator();
-    const flt = this.ctx.createBiquadFilter(); flt.type = "bandpass"; flt.frequency.value = 340; flt.Q.value = 2;
     osc.type = "sawtooth"; osc.frequency.value = 52;
-    osc.connect(flt); flt.connect(g); g.connect(this.master); osc.start();
+    osc.connect(this.breathFlt); this.breathFlt.connect(this.breathGain); this.breathGain.connect(this.master); osc.start();
     const breathe = () => {
-      if (!this.ctx || !g) return;
+      if (!this.ctx || !this.breathGain) return;
       const t = this.ctx.currentTime;
-      g.gain.setValueAtTime(0, t);
-      g.gain.linearRampToValueAtTime(0.06, t + 2);
-      g.gain.linearRampToValueAtTime(0, t + 4.5);
+      const dur = Math.min(this.breathInterval / 1000, 4.5);
+      this.breathGain.gain.setValueAtTime(0, t);
+      this.breathGain.gain.linearRampToValueAtTime(this._breathPeak, t + dur * 0.42);
+      this.breathGain.gain.linearRampToValueAtTime(0, t + dur);
+      this.breathTimer = setTimeout(breathe, this.breathInterval);
     };
-    breathe(); setInterval(breathe, 4500);
+    breathe();
+  }
+
+  setBreathingO2(o2: number) {
+    if (!this.ctx || !this.breathGain || !this.breathFlt) return;
+    // 4 tiers: calm → slightly heavy → labored → desperate
+    const tier = o2 > 60 ? 0 : o2 > 30 ? 1 : o2 > 10 ? 2 : 3;
+    if (tier === this.lastBreathTier) return;
+    this.lastBreathTier = tier;
+    const cfgs = [
+      { interval: 4500, peak: 0.06, freq: 340, q: 2.0 },
+      { interval: 3800, peak: 0.09, freq: 305, q: 1.7 },
+      { interval: 2700, peak: 0.14, freq: 255, q: 1.3 },
+      { interval: 1900, peak: 0.20, freq: 200, q: 1.0 },
+    ];
+    const cfg = cfgs[tier];
+    this.breathInterval = cfg.interval;
+    this._breathPeak = cfg.peak;
+    this.breathFlt.frequency.linearRampToValueAtTime(cfg.freq, this.ctx.currentTime + 1.5);
+    this.breathFlt.Q.linearRampToValueAtTime(cfg.q, this.ctx.currentTime + 1.5);
   }
   sonar(type: "small" | "large") {
     if (!this.ctx || !this.master) return;
@@ -1017,21 +1065,71 @@ class AudioSys {
     this.lullabyGain.gain.linearRampToValueAtTime(Math.max(0, Math.min(1, v)), this.ctx.currentTime + 1.2);
   }
 
+  private _ventilatorActive = false;
+
+  // Shared ventilator engine — routes to `dest` so gameplay and collapse both reuse this logic.
+  private _startVentilatorEngine(dest: AudioNode) {
+    if (!this.ctx || this._ventilatorActive) return;
+    this._ventilatorActive = true;
+    const ctx = this.ctx;
+    // Continuous low mechanical hum
+    const humOsc = ctx.createOscillator(); humOsc.type = "square"; humOsc.frequency.value = 55;
+    const humFlt = ctx.createBiquadFilter(); humFlt.type = "lowpass"; humFlt.frequency.value = 130;
+    const humG = ctx.createGain(); humG.gain.value = 0.022;
+    humOsc.connect(humFlt); humFlt.connect(humG); humG.connect(dest); humOsc.start();
+    // Rhythmic breath cycle: inhale → hold → exhale, every 3.4 s
+    const CYCLE = 3.4;
+    const active = this; // guard: stop scheduling if engine replaced
+    const scheduleBreath = (t0: number) => {
+      if (!active._ventilatorActive || !this.ctx) return;
+      const clickLen = Math.ceil(ctx.sampleRate * 0.045);
+      const cBuf = ctx.createBuffer(1, clickLen, ctx.sampleRate);
+      const cd = cBuf.getChannelData(0);
+      for (let i = 0; i < cd.length; i++) cd[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.007));
+      const cSrc = ctx.createBufferSource(); cSrc.buffer = cBuf;
+      const cFlt = ctx.createBiquadFilter(); cFlt.type = "highpass"; cFlt.frequency.value = 600;
+      const cG = ctx.createGain(); cG.gain.value = 0.14;
+      cSrc.connect(cFlt); cFlt.connect(cG); cG.connect(dest); cSrc.start(t0);
+      cSrc.onended = () => { try { cSrc.disconnect(); cFlt.disconnect(); cG.disconnect(); } catch { /**/ } };
+      const inLen = Math.ceil(ctx.sampleRate * 1.1);
+      const inBuf = ctx.createBuffer(1, inLen, ctx.sampleRate);
+      const ind = inBuf.getChannelData(0);
+      for (let i = 0; i < ind.length; i++) ind[i] = Math.random() * 2 - 1;
+      const inSrc = ctx.createBufferSource(); inSrc.buffer = inBuf;
+      const inFlt = ctx.createBiquadFilter(); inFlt.type = "bandpass"; inFlt.frequency.value = 850; inFlt.Q.value = 0.65;
+      const inG = ctx.createGain();
+      inG.gain.setValueAtTime(0, t0 + 0.04); inG.gain.linearRampToValueAtTime(0.085, t0 + 0.32); inG.gain.linearRampToValueAtTime(0.065, t0 + 1.15);
+      inSrc.connect(inFlt); inFlt.connect(inG); inG.connect(dest);
+      inSrc.start(t0 + 0.04); inSrc.stop(t0 + 1.2);
+      inSrc.onended = () => { try { inSrc.disconnect(); inFlt.disconnect(); inG.disconnect(); } catch { /**/ } };
+      const exLen = Math.ceil(ctx.sampleRate * 0.9);
+      const exBuf = ctx.createBuffer(1, exLen, ctx.sampleRate);
+      const exd = exBuf.getChannelData(0);
+      for (let i = 0; i < exd.length; i++) exd[i] = Math.random() * 2 - 1;
+      const exSrc = ctx.createBufferSource(); exSrc.buffer = exBuf;
+      const exFlt = ctx.createBiquadFilter(); exFlt.type = "bandpass"; exFlt.frequency.value = 620; exFlt.Q.value = 0.5;
+      const exG = ctx.createGain();
+      exG.gain.setValueAtTime(0.075, t0 + 1.7); exG.gain.exponentialRampToValueAtTime(0.001, t0 + 2.6);
+      exSrc.connect(exFlt); exFlt.connect(exG); exG.connect(dest);
+      exSrc.start(t0 + 1.7); exSrc.stop(t0 + 2.65);
+      exSrc.onended = () => { try { exSrc.disconnect(); exFlt.disconnect(); exG.disconnect(); } catch { /**/ } };
+      const c2Buf = ctx.createBuffer(1, clickLen, ctx.sampleRate);
+      const c2d = c2Buf.getChannelData(0);
+      for (let i = 0; i < c2d.length; i++) c2d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.007));
+      const c2Src = ctx.createBufferSource(); c2Src.buffer = c2Buf;
+      const c2Flt = ctx.createBiquadFilter(); c2Flt.type = "highpass"; c2Flt.frequency.value = 600;
+      const c2G = ctx.createGain(); c2G.gain.value = 0.09;
+      c2Src.connect(c2Flt); c2Flt.connect(c2G); c2G.connect(dest); c2Src.start(t0 + 2.6);
+      c2Src.onended = () => { try { c2Src.disconnect(); c2Flt.disconnect(); c2G.disconnect(); } catch { /**/ } };
+      const delayMs = Math.max(0, (t0 + CYCLE - ctx.currentTime) * 1000);
+      setTimeout(() => { if (this.ctx && active._ventilatorActive) scheduleBreath(this.ctx.currentTime); }, delayMs);
+    };
+    scheduleBreath(ctx.currentTime + 0.4);
+  }
+
   ventilatorSound() {
     if (!this.ctx || !this.master) return;
-    const ctx = this.ctx; const t0 = ctx.currentTime;
-    const mechOsc = ctx.createOscillator(); mechOsc.type = "square"; mechOsc.frequency.value = 8;
-    const mechG = ctx.createGain(); mechG.gain.value = 0.04;
-    const mechFlt = ctx.createBiquadFilter(); mechFlt.type = "bandpass"; mechFlt.frequency.value = 220; mechFlt.Q.value = 3;
-    mechOsc.connect(mechFlt); mechFlt.connect(mechG); mechG.connect(this.master); mechOsc.start(t0);
-    const hissLen = ctx.sampleRate * 8;
-    const hissBuf = ctx.createBuffer(1, hissLen, ctx.sampleRate);
-    const hd = hissBuf.getChannelData(0);
-    for (let i = 0; i < hd.length; i++) hd[i] = (Math.random() * 2 - 1) * 0.3;
-    const hissSrc = ctx.createBufferSource(); hissSrc.buffer = hissBuf; hissSrc.loop = true;
-    const hissFlt = ctx.createBiquadFilter(); hissFlt.type = "bandpass"; hissFlt.frequency.value = 1200; hissFlt.Q.value = 0.5;
-    const hissG = ctx.createGain(); hissG.gain.setValueAtTime(0, t0); hissG.gain.linearRampToValueAtTime(0.05, t0 + 2);
-    hissSrc.connect(hissFlt); hissFlt.connect(hissG); hissG.connect(this.master); hissSrc.start(t0);
+    this._startVentilatorEngine(this.master);
   }
 
   // On Mia dock: fade all non-lullaby audio to 0 via master; lullaby stands alone
@@ -1072,28 +1170,20 @@ class AudioSys {
     this.master.gain.cancelScheduledValues(now);
     this.master.gain.setValueAtTime(this.master.gain.value, now);
     this.master.gain.linearRampToValueAtTime(0, now + 2.8);
-    // Also ramp lullaby to 0 (it bypasses master) — only ventilator remains
+    // Graceful multi-stage lullaby fade (bypasses master, so must be faded here)
+    // Hold → gentle slope → slow exponential tail → silence
     if (this.lullabyGain) {
+      const curGain = this.lullabyGain.gain.value;
       this.lullabyGain.gain.cancelScheduledValues(now);
-      this.lullabyGain.gain.setValueAtTime(this.lullabyGain.gain.value, now);
-      this.lullabyGain.gain.linearRampToValueAtTime(0, now + 2.5);
+      this.lullabyGain.gain.setValueAtTime(curGain, now);
+      this.lullabyGain.gain.linearRampToValueAtTime(curGain * 0.80, now + 1.5);
+      this.lullabyGain.gain.linearRampToValueAtTime(curGain * 0.35, now + 4.0);
+      this.lullabyGain.gain.exponentialRampToValueAtTime(0.001, now + 8.5);
     }
-    // Ventilator fires on its own gain node bypassing master — only sound that remains
+    // Ventilator fires bypassing master (master = 0) — shared engine, routed to destination
     setTimeout(() => {
       if (!this.ctx) return;
-      const t0 = this.ctx.currentTime;
-      const mechOsc = this.ctx.createOscillator(); mechOsc.type = "square"; mechOsc.frequency.value = 8;
-      const mechG = this.ctx.createGain(); mechG.gain.value = 0.06;
-      const mechFlt = this.ctx.createBiquadFilter(); mechFlt.type = "bandpass"; mechFlt.frequency.value = 220; mechFlt.Q.value = 3;
-      mechOsc.connect(mechFlt); mechFlt.connect(mechG); mechG.connect(this.ctx.destination); mechOsc.start(t0);
-      const hissLen = this.ctx.sampleRate * 12;
-      const hissBuf = this.ctx.createBuffer(1, hissLen, this.ctx.sampleRate);
-      const hd = hissBuf.getChannelData(0);
-      for (let i = 0; i < hd.length; i++) hd[i] = (Math.random() * 2 - 1) * 0.3;
-      const hissSrc = this.ctx.createBufferSource(); hissSrc.buffer = hissBuf; hissSrc.loop = true;
-      const hissFlt = this.ctx.createBiquadFilter(); hissFlt.type = "bandpass"; hissFlt.frequency.value = 1200; hissFlt.Q.value = 0.5;
-      const hissG = this.ctx.createGain(); hissG.gain.setValueAtTime(0, t0); hissG.gain.linearRampToValueAtTime(0.07, t0 + 1.5);
-      hissSrc.connect(hissFlt); hissFlt.connect(hissG); hissG.connect(this.ctx.destination); hissSrc.start(t0);
+      this._startVentilatorEngine(this.ctx.destination);
     }, 2900);
   }
 
@@ -2739,6 +2829,11 @@ class EchoesGame {
     this.prevYaw = AUTO_FORWARD_YAW;
     this.cameraRoll = 0; this.cameraPitchOff = 0; this.subVertOff = 0;
 
+    // Reset breathing O2 tier so it recalculates on first updateO2 tick
+    this.audio.resetBreathingTier();
+    // Set ambient creak density/gain for this level
+    if (this.audioReady) this.audio.setAmbientCreakLevel(idx);
+
     // Reset hull stress state for new level
     this.hullStressTier = -1;
     this.hullStressTimer = 0;
@@ -3695,6 +3790,7 @@ class EchoesGame {
     const drain = (boosting && mv) ? O2_DRAIN_BOOST : O2_DRAIN_NORMAL;
     this.o2 = Math.max(0, this.o2 - drain * (dt / 1000));
     if (this.o2 < 20) { this.alarmTimer -= dt; if (this.alarmTimer <= 0) { this.alarmTimer = 2200; this.audio.alarm(); } }
+    if (this.audioReady) this.audio.setBreathingO2(this.o2);
     if (this.o2 <= 0 && !this.transitioning) this.triggerGameOver();
   }
 
