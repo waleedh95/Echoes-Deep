@@ -1571,42 +1571,69 @@ function buildCockpit(camera: THREE.PerspectiveCamera): { sweep: THREE.Object3D 
   return { sweep: sonarRing };
 }
 
-function makeHeadlightCookie(): THREE.CanvasTexture {
-  const size = 256;
+// ============================================================
+// ANIMATED HEADLIGHT COOKIE
+// Draws a 128×128 caustic ripple texture that can be refreshed
+// each render tick with a time offset so the beam shimmers like
+// real underwater light refraction.
+// ============================================================
+interface AnimatedCookie {
+  texture: THREE.CanvasTexture;
+  /** Redraw cookie at time t (seconds). Call every N frames. */
+  update(t: number): void;
+}
+
+function makeAnimatedHeadlightCookie(): AnimatedCookie {
+  const size = 128;
   const canvas = document.createElement("canvas");
   canvas.width = size; canvas.height = size;
   const ctx = canvas.getContext("2d")!;
-  ctx.fillStyle = "#000";
-  ctx.fillRect(0, 0, size, size);
-  const grad = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-  grad.addColorStop(0, "rgba(255,255,255,1)");
-  grad.addColorStop(0.45, "rgba(255,255,255,0.85)");
-  grad.addColorStop(0.72, "rgba(255,255,255,0.3)");
-  grad.addColorStop(1, "rgba(0,0,0,0)");
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, size, size);
-  const imageData = ctx.getImageData(0, 0, size, size);
-  const data = imageData.data;
-  for (let y = 0; y < size; y++) {
-    for (let x = 0; x < size; x++) {
-      const idx = (y * size + x) * 4;
-      const dx = (x - size / 2) / (size / 2);
-      const dy = (y - size / 2) / (size / 2);
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      if (dist < 1.0) {
-        const ripple = Math.sin(dist * 20) * 0.12 + Math.sin(dx * 15 + dy * 11) * 0.09 + Math.sin(dx * 8 - dy * 13) * 0.07;
-        const noise = (Math.random() - 0.5) * 0.06;
-        const base = data[idx] / 255;
-        const factor = Math.max(0, Math.min(1, base + ripple + noise));
-        const v = Math.floor(factor * 255);
-        data[idx] = v; data[idx + 1] = v; data[idx + 2] = v;
+  const tex = new THREE.CanvasTexture(canvas);
+
+  function draw(t: number) {
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, size, size);
+    // Radial gradient base — bright centre, falloff to transparent edge
+    const cx = size / 2, cy = size / 2;
+    const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, cx);
+    grad.addColorStop(0,    "rgba(255,255,255,1)");
+    grad.addColorStop(0.45, "rgba(255,255,255,0.85)");
+    grad.addColorStop(0.72, "rgba(255,255,255,0.3)");
+    grad.addColorStop(1,    "rgba(0,0,0,0)");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, size, size);
+
+    // Modulate pixel brightness with three slowly drifting sine waves
+    // ph1 shifts radial rings; ph2/ph3 drift diagonal interference bands
+    const ph1 = t * 0.7;
+    const ph2 = t * 0.5;
+    const ph3 = t * 0.4;
+    const imageData = ctx.getImageData(0, 0, size, size);
+    const data = imageData.data;
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const idx = (y * size + x) * 4;
+        const dx = (x - cx) / cx;
+        const dy = (y - cy) / cy;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < 1.0) {
+          const ripple =
+            Math.sin(dist * 20 + ph1) * 0.12 +
+            Math.sin(dx * 15 + dy * 11 + ph2) * 0.09 +
+            Math.sin(dx * 8  - dy * 13 + ph3) * 0.07;
+          const base   = data[idx] / 255;
+          const factor = Math.max(0, Math.min(1, base + ripple));
+          const v = Math.floor(factor * 255);
+          data[idx] = v; data[idx + 1] = v; data[idx + 2] = v;
+        }
       }
     }
+    ctx.putImageData(imageData, 0, 0);
+    tex.needsUpdate = true;
   }
-  ctx.putImageData(imageData, 0, 0);
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.needsUpdate = true;
-  return tex;
+
+  draw(0); // initial bake so the texture is non-blank from the start
+  return { texture: tex, update: draw };
 }
 
 function buildParticles(worldW: number, worldH: number): THREE.Points {
@@ -2001,6 +2028,10 @@ class EchoesGame {
   // Post-processing uniforms that need per-frame updates
   private grainUniforms: { tDiffuse: { value: THREE.Texture | null }; time: { value: number }; intensity: { value: number } } | null = null;
 
+  // Animated headlight cookie — caustic ripple texture that drifts each frame
+  private headlightCookie: AnimatedCookie | null = null;
+  private cookieFrame = 0; // throttle: redraw every 3 render frames
+
   // Hull stress audio system
   private hullStressTier = -1;      // 0=shallow 1=mid 2=deep 3=abyss; -1=uninitialised
   private hullStressTimer = 0;      // ms until next random groan trigger
@@ -2105,7 +2136,8 @@ class EchoesGame {
     const headlight = new THREE.SpotLight(0xCCE6FF, 6.0, 18, Math.PI / 4.5, 0.4, 2);
     headlight.position.set(0, 0, 0);
     headlight.target.position.set(0, 0, -1);
-    headlight.map = makeHeadlightCookie();
+    this.headlightCookie = makeAnimatedHeadlightCookie();
+    headlight.map = this.headlightCookie.texture;
     this.camera.add(headlight);
     this.camera.add(headlight.target);
     // Soft close-range fill so nearby walls aren't pitch black at the edges of the cone
@@ -3651,6 +3683,14 @@ class EchoesGame {
 
     // Update film grain time uniform for live static noise
     if (this.grainUniforms) this.grainUniforms.time.value = performance.now() / 1000;
+
+    // Animate headlight cookie — redraw caustic ripple every 3 frames to keep cost low
+    if (this.headlightCookie) {
+      this.cookieFrame++;
+      if (this.cookieFrame % 3 === 0) {
+        this.headlightCookie.update(performance.now() / 1000);
+      }
+    }
 
     // Render 3D scene with post-processing stack
     this.composer.render();
