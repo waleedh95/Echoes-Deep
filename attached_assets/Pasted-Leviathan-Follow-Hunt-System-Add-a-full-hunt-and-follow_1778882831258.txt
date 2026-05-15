@@ -1,0 +1,71 @@
+Leviathan Follow & Hunt System
+
+Add a full hunt and follow behavior system to the Leviathans (Sound-Hunters) in Echoes of the Deep.
+
+HOW LEVIATHANS DETECT THE PLAYER:
+	The Leviathans are blind. They cannot see the submarine. They hunt entirely by sound.
+
+Sounds that attract them:
+	- Sonar ping (small) — attracts any Leviathan within medium range
+	- Sonar ping (large) — attracts every Leviathan in the entire level
+	- Colliding with rocks or walls — attracts any Leviathan within close range
+	- Moving at full speed — creates a low constant noise that attracts nearby Leviathans slowly over time
+	- Firing a flare — creates a loud burst that pulls all nearby Leviathans toward the flare location instead of the player — use this as a distraction
+
+Sounds that do NOT attract them:
+	- Moving slowly (half speed or less)
+	- Staying completely still
+	- Docking with a pod quietly
+
+
+LEVIATHAN STATES — HOW THEY BEHAVE:
+
+State 1 — Patrolling:
+	- The Leviathan moves in a slow fixed patrol path
+	- It is not aware of the player
+	- Its body pulses dim and slow — like a heartbeat at rest
+	- The ambient sound it makes is low and distant
+
+State 2 — Alerted:
+	- The Leviathan heard something
+	- It stops its patrol and turns toward the sound source
+	- It moves toward the last place it heard the noise
+	- Its body pulses faster — brighter
+	- The sound it makes gets louder and closer
+	- If it reaches the sound location and finds nothing — it returns slowly to patrol after 5 seconds
+        - If Leviathan notices you, he should make a very loud noise.
+
+State 3 — Hunting:
+	- The Leviathan has located the submarine directly
+	- It locks on and follows the player continuously
+	- It accelerates the closer it gets
+	- Its body pulses rapidly — almost blinding
+	- The sound becomes the loud mechanical breathing — the ventilator sound — overwhelming and close
+	- It does not stop. It does not give up. It follows until it hits the submarine or loses the signal.
+
+State 4 — Attacking:
+	- The Leviathan reaches the submarine and rams it
+	- Hull integrity drops significantly on impact
+	- The screen shakes hard
+	- The Leviathan pulls back slightly then immediately begins hunting again
+	- It will keep attacking until the player escapes its range or distracts it with a flare
+
+
+HOW THE PLAYER ESCAPES:
+	- Move slowly and quietly — the Leviathan gradually loses the signal
+	- Fire a flare in a different direction — it breaks off and chases the flare
+	- Hide behind a large rock or wall — breaks line of sound temporarily
+	- Go completely still for 8 seconds — the Leviathan loses the signal and returns to patrol
+
+
+IMPORTANT DETAILS:
+	- The Leviathan never fully disappears from the level — it always returns to patrol after losing the player
+	- Multiple Leviathans do not coordinate with each other — they each react independently to sound
+	- The closer a Leviathan is, the louder the ventilator breathing sound becomes — this is the player's audio warning system
+	- There is no radar showing Leviathan position — the player must use sound alone to know how close they are
+	- When a Leviathan is hunting, the analog gauge panel flickers slightly — the instruments react to the pressure of its presence
+
+
+THE FEELING:
+The Leviathan is not a monster. It is a sound. It is the machine keeping Elias alive, hunting down the last fragment of his mind still fighting to survive. Every time it gets close — that sound, that breathing — is the hospital room bleeding into the dream. The player should feel it before they see it. And they should always be afraid of silence turning into that sound."
+
