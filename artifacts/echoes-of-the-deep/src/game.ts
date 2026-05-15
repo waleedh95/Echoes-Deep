@@ -6036,12 +6036,23 @@ class EchoesGame {
     ctx.strokeStyle = 'rgba(0,120,180,0.28)'; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(CX + 40, CY + 110); ctx.lineTo(CX + CW - 40, CY + 110); ctx.stroke();
 
-    // "Searching for X…" — family name reminder
+    // "Searching for X…" — typewriter entrance, starts after card fades in
     if (searchName) {
-      ctx.shadowColor = '#C8A84B'; ctx.shadowBlur = 10;
-      ctx.fillStyle = 'rgba(200,168,75,0.82)'; ctx.font = 'italic 13px monospace';
-      ctx.fillText(`Searching for ${searchName}\u2026`, GAME_W/2, CY + 126);
-      ctx.shadowBlur = 0;
+      const TYPE_START = 0.15;  // card fully visible by ~0.12
+      const TYPE_END   = 0.52;  // completes well before fade-out at 0.84
+      if (progress >= TYPE_START) {
+        const fullText   = `Searching for ${searchName}\u2026`;
+        const typeT      = Math.min(1, (progress - TYPE_START) / (TYPE_END - TYPE_START));
+        const charsToShow = Math.floor(typeT * fullText.length);
+        const isTyping    = charsToShow < fullText.length;
+        // Blinking underscore cursor at ~7 Hz while characters are still appearing
+        const showCursor  = isTyping && (Math.floor(Date.now() / 75) % 2 === 0);
+        const displayText = fullText.slice(0, charsToShow) + (showCursor ? '_' : '');
+        ctx.shadowColor = '#C8A84B'; ctx.shadowBlur = 10;
+        ctx.fillStyle = 'rgba(200,168,75,0.82)'; ctx.font = 'italic 13px monospace';
+        ctx.fillText(displayText, GAME_W/2, CY + 126);
+        ctx.shadowBlur = 0;
+      }
     }
 
     // ── Analog depth gauge sweep ──
