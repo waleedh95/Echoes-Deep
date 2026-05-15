@@ -8,6 +8,7 @@ import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 
 // ============================================================
 // POST-PROCESSING SHADER DEFINITIONS
@@ -1582,6 +1583,270 @@ function buildParticles(worldW: number, worldH: number): THREE.Points {
 }
 
 // ============================================================
+// SEEDED PRNG (xorshift32)
+// ============================================================
+function seededRng(seed: number): () => number {
+  let s = ((seed >>> 0) ^ 0xA3C59F71) || 1;
+  return (): number => {
+    s ^= s << 13; s ^= s >>> 17; s ^= s << 5;
+    return (s >>> 0) / 0x100000000;
+  };
+}
+
+// ============================================================
+// ROCK GLB — loaded once at startup; scatter waits on this promise
+// so fallback is only used on explicit load failure, not "still loading".
+// ============================================================
+const _rockLoadPromise: Promise<THREE.BufferGeometry | null> = (async () => {
+  try {
+    const loader = new GLTFLoader();
+    const gltf = await loader.loadAsync(
+      `${import.meta.env.BASE_URL}beach_cliff_rock_face_1778855916049.glb`,
+    );
+    let geo: THREE.BufferGeometry | null = null;
+    gltf.scene.traverse((child) => {
+      if (geo) return;
+      const m = child as THREE.Mesh;
+      if (m.isMesh && m.geometry) geo = (m.geometry as THREE.BufferGeometry).clone();
+    });
+    return geo;
+  } catch {
+    return null; // explicit load failure — use procedural fallback
+  }
+})();
+
+// ============================================================
+// OBSTACLE SCATTER HELPERS
+// ============================================================
+interface ScatterResult {
+  meshes: THREE.Object3D[];
+  revealEntries: Array<{ lines: THREE.LineSegments; mat: THREE.LineBasicMaterial; cx: number; cy: number }>;
+  rects: Rect[];
+}
+
+function _scatterRockMat(rng: () => number): THREE.MeshStandardMaterial {
+  const palette = [0x1a2530, 0x243040, 0x1c2838, 0x2a3848, 0x131e28, 0x1e2c3a, 0x232f3c];
+  return new THREE.MeshStandardMaterial({
+    color: palette[Math.floor(rng() * palette.length)],
+    roughness: 0.94,
+    metalness: 0.03,
+  });
+}
+
+function _makeRevealLines(
+  geo: THREE.BufferGeometry,
+  position: THREE.Vector3,
+  rotation: THREE.Euler,
+  scale: THREE.Vector3,
+): { lines: THREE.LineSegments; mat: THREE.LineBasicMaterial } {
+  const mat = new THREE.LineBasicMaterial({
+    color: 0x22BBFF,
+    transparent: true,
+    opacity: 0,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+  });
+  const lines = new THREE.LineSegments(new THREE.EdgesGeometry(geo), mat);
+  lines.position.copy(position);
+  lines.rotation.copy(rotation);
+  lines.scale.copy(scale);
+  return { lines, mat };
+}
+
+// ─── ROCKS ────────────────────────────────────────────────────────────────────
+// rockGeo is the resolved GLB geometry (null on explicit load failure).
+// RNG consumption is identical regardless of rockGeo availability so the
+// same seed always produces the same positions and colliders.
+function scatterRocks(
+  seed: number, worldW: number, worldH: number,
+  rockGeo: THREE.BufferGeometry | null,
+): ScatterResult {
+  const rng = seededRng(seed);
+  const result: ScatterResult = { meshes: [], revealEntries: [], rects: [] };
+  const total = 15 + Math.floor(rng() * 16);
+
+  let placed = 0;
+  while (placed < total) {
+    const clusterSize = rng() < 0.55 ? 1 : 2 + Math.floor(rng() * 3);
+    const baseCx = 80 + rng() * (worldW - 160);
+    const baseCz = 80 + rng() * (worldH - 160);
+
+    for (let c = 0; c < clusterSize && placed < total; c++, placed++) {
+      const scale = 0.5 + rng() * 2.5;
+      const rotY   = rng() * Math.PI * 2;
+      const tiltX  = (rng() - 0.5) * 0.7;
+      const tiltZ  = (rng() - 0.5) * 0.7;
+      const x2d = Math.max(60, Math.min(worldW - 60, baseCx + (rng() - 0.5) * 80));
+      const z2d = Math.max(60, Math.min(worldH - 60, baseCz + (rng() - 0.5) * 80));
+
+      // Always consume the same RNG calls for procedural params.
+      // These drive colliders + fallback geometry regardless of GLB state.
+      const r    = 0.35 + rng() * 0.4;
+      const h    = 0.8  + rng() * 1.5;
+      const segs = 5    + Math.floor(rng() * 4);
+
+      // Visual geometry: GLB clone preferred, procedural cone as fallback
+      const baseGeo: THREE.BufferGeometry = rockGeo
+        ? rockGeo.clone()
+        : new THREE.ConeGeometry(r, h, segs);
+
+      const pos  = new THREE.Vector3(x2d * WS, 0, z2d * WS);
+      const rot  = new THREE.Euler(tiltX, rotY, tiltZ);
+      const scl  = new THREE.Vector3(scale, scale, scale);
+
+      const pt = rng();
+      if (pt < 0.60) {
+        pos.y = 0;
+      } else if (pt < 0.78) {
+        pos.y = WALL_H - scale * 0.45; // constant — independent of GLB state
+        rot.x += Math.PI;
+      } else {
+        pos.y = -scale * rng() * 0.35;
+      }
+
+      const mesh = new THREE.Mesh(baseGeo, _scatterRockMat(rng));
+      mesh.position.copy(pos); mesh.rotation.copy(rot); mesh.scale.copy(scl);
+      result.meshes.push(mesh);
+
+      const { lines, mat } = _makeRevealLines(baseGeo, pos, rot, scl);
+      result.meshes.push(lines);
+      result.revealEntries.push({ lines, mat, cx: x2d, cy: z2d });
+
+      // Collider always derived from procedural r (deterministic across runs)
+      const fr = Math.min(48, Math.max(8, (r * scale) / WS));
+      result.rects.push({ x: x2d - fr, y: z2d - fr, w: fr * 2, h: fr * 2 });
+    }
+  }
+  return result;
+}
+
+// ─── WALLS ────────────────────────────────────────────────────────────────────
+function scatterWalls(seed: number, worldW: number, worldH: number): ScatterResult {
+  const rng = seededRng(seed);
+  const result: ScatterResult = { meshes: [], revealEntries: [], rects: [] };
+  const wallPalette = [0x1e2c3e, 0x1a2838, 0x243248, 0x162230, 0x202e40, 0x1c2a38];
+  const total = 5 + Math.floor(rng() * 8);
+
+  for (let w = 0; w < total; w++) {
+    const x2d     = 100 + rng() * (worldW - 200);
+    const z2d     = 100 + rng() * (worldH - 200);
+    const wallRot = rng() * Math.PI;
+    const slabs   = 2   + Math.floor(rng() * 3);
+    let offsetZ   = 0;
+
+    for (let s = 0; s < slabs; s++) {
+      const sw  = (14 + rng() * 34) * WS;
+      const sh  = WALL_H * (0.5 + rng() * 0.5);
+      const sd  = (7  + rng() * 16) * WS;
+      const cx3 = x2d * WS + (rng() - 0.5) * sw * 0.25;
+      const cz3 = z2d * WS + offsetZ;
+      offsetZ  += (rng() - 0.5) * sd * 0.8;
+
+      const rot = new THREE.Euler(0, wallRot + (rng() - 0.5) * 0.3, 0);
+      const pos = new THREE.Vector3(cx3, sh / 2, cz3);
+      const geo = new THREE.BoxGeometry(sw, sh, sd);
+      const mat = new THREE.MeshStandardMaterial({
+        color: wallPalette[Math.floor(rng() * wallPalette.length)],
+        roughness: 0.95, metalness: 0.05,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.copy(pos); mesh.rotation.copy(rot);
+      result.meshes.push(mesh);
+
+      const { lines, mat: lmat } = _makeRevealLines(geo, pos, rot, new THREE.Vector3(1, 1, 1));
+      result.meshes.push(lines);
+      result.revealEntries.push({ lines, mat: lmat, cx: x2d, cy: z2d });
+
+      const cosR = Math.abs(Math.cos(wallRot));
+      const sinR = Math.abs(Math.sin(wallRot));
+      const rw2d = (sw / WS) * cosR + (sd / WS) * sinR;
+      const rh2d = (sw / WS) * sinR + (sd / WS) * cosR;
+      // Use actual slab centre (cx3/cz3) not wall anchor (x2d/z2d) so each
+      // slab's AABB tracks its real displaced position in the 2D collision map.
+      const slabCx = cx3 / WS;
+      const slabCz = cz3 / WS;
+      result.rects.push({ x: slabCx - rw2d / 2, y: slabCz - rh2d / 2, w: rw2d, h: rh2d });
+    }
+  }
+  return result;
+}
+
+// ─── DEBRIS ───────────────────────────────────────────────────────────────────
+function scatterDebris(seed: number, worldW: number, worldH: number): ScatterResult {
+  const rng = seededRng(seed);
+  const result: ScatterResult = { meshes: [], revealEntries: [], rects: [] };
+  const metalPalette = [0x2a3540, 0x1e2c38, 0x344454, 0x3a4858, 0x1a2632, 0x283848];
+  const total = 10 + Math.floor(rng() * 11);
+
+  for (let cl = 0; cl < total; cl++) {
+    const cx2d = 80 + rng() * (worldW - 160);
+    const cz2d = 80 + rng() * (worldH - 160);
+    const pieces = 2 + Math.floor(rng() * 4);
+    // Size-proportional heuristic: large clusters (4–5 pieces) occupy enough
+    // physical space to plausibly block the sub; small ones rarely do.
+    // This replaces a flat 40% with a graduated probability so colliders
+    // appear where there is actually enough geometry to warrant them.
+    const blocksPath = rng() < (pieces >= 4 ? 0.65 : 0.20);
+
+    for (let p = 0; p < pieces; p++) {
+      const px2d = cx2d + (rng() - 0.5) * 60;
+      const pz2d = cz2d + (rng() - 0.5) * 60;
+      const x3d  = px2d * WS;
+      const z3d  = pz2d * WS;
+
+      const floatRoll = rng();
+      const y3d = floatRoll < 0.65 ? rng() * 0.3
+               : floatRoll < 0.88  ? 0.3 + rng() * 1.2
+               :                     1.0 + rng() * 2.0;
+
+      const rotX = (rng() - 0.5) * Math.PI;
+      const rotY = rng() * Math.PI * 2;
+      const rotZ = (rng() - 0.5) * Math.PI;
+      const pos  = new THREE.Vector3(x3d, y3d, z3d);
+      const rot  = new THREE.Euler(rotX, rotY, rotZ);
+      const scl  = new THREE.Vector3(1, 1, 1);
+
+      const shapeRoll = rng();
+      let geo: THREE.BufferGeometry;
+      if (shapeRoll < 0.38) {
+        geo = new THREE.BoxGeometry(
+          (0.3 + rng() * 0.8) * WS * 20,
+          (0.04 + rng() * 0.12) * WS * 20,
+          (0.2 + rng() * 0.6) * WS * 20,
+        );
+      } else if (shapeRoll < 0.64) {
+        geo = new THREE.CylinderGeometry(
+          0.04 + rng() * 0.10, 0.04 + rng() * 0.10,
+          0.2 + rng() * 0.8, 7,
+        );
+      } else if (shapeRoll < 0.84) {
+        geo = new THREE.ConeGeometry(0.08 + rng() * 0.22, 0.15 + rng() * 0.55, 4 + Math.floor(rng() * 3));
+      } else {
+        const s = 0.1 + rng() * 0.35;
+        geo = new THREE.BoxGeometry(s, s * (0.4 + rng() * 0.6), s);
+      }
+
+      const mat = new THREE.MeshStandardMaterial({
+        color: metalPalette[Math.floor(rng() * metalPalette.length)],
+        roughness: 0.88, metalness: 0.35,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.copy(pos); mesh.rotation.copy(rot);
+      result.meshes.push(mesh);
+
+      const { lines, mat: lmat } = _makeRevealLines(geo, pos, rot, scl);
+      result.meshes.push(lines);
+      result.revealEntries.push({ lines, mat: lmat, cx: px2d, cy: pz2d });
+    }
+
+    if (blocksPath) {
+      result.rects.push({ x: cx2d - 22, y: cz2d - 22, w: 44, h: 44 });
+    }
+  }
+  return result;
+}
+
+// ============================================================
 // MAIN GAME CLASS
 // ============================================================
 class EchoesGame {
@@ -1624,6 +1889,7 @@ class EchoesGame {
 
   // State
   private state: GameState = "MENU";
+  private _sceneBuildToken = 0; // incremented each loadLevel call; post-await guard
   private lvlIdx = 0;
   private lvlDef: LevelData | null = null;
   private lvlTime = 0;
@@ -1925,13 +2191,23 @@ class EchoesGame {
     this.lastYawStress = Math.PI;
     this.hullGainRampTimer = 0;
 
-    // Build 3D scene
-    this.build3DScene(def);
-    this.state = "PLAYING";
+    // Show level-transition screen immediately so the user sees something
+    // meaningful while build3DScene awaits the GLB, and to block re-triggering
+    // from MENU/GAME_OVER input handlers before PLAYING state is set.
+    this.transitionTargetLvl = idx;
+    this.transitionStartMs = Date.now();
+    this.state = "LEVEL_TRANSITION";
+
+    // Build 3D scene async — sets state to PLAYING on completion.
+    void this.build3DScene(def);
   }
 
-  private build3DScene(def: LevelData) {
-    // Bump the build token so any in-flight async work from a prior level is ignored.
+  private async build3DScene(def: LevelData): Promise<void> {
+    // Increment the build token on every call.  After the async await below we
+    // compare against this captured token; if they differ, a newer build has started
+    // and we silently discard our results to prevent duplicate scene/obstacle state.
+    const buildToken = ++this._sceneBuildToken;
+
     // Dispose previous scene content recursively (geometries + materials + textures)
     this.sceneGroup.traverse((obj) => {
       const g = (obj as THREE.Mesh | THREE.LineSegments | THREE.Points | THREE.Sprite).geometry as THREE.BufferGeometry | undefined;
@@ -2062,6 +2338,36 @@ class EchoesGame {
     // Bioluminescent particles
     this.particleSystem = buildParticles(def.worldW, def.worldH);
     this.sceneGroup.add(this.particleSystem);
+
+    // ── Natural ocean obstacle scattering ──────────────────────────────────────
+    // Await GLB rock geometry so fallback is only used on explicit failure,
+    // never because the asset is still in-flight.
+    // Per-level deterministic seeds: rocks 1001/2001/3001, walls 2001/3001/4001,
+    // debris 3001/4001/5001.  Results integrate into sceneGroup, revealObjs, and
+    // def.obstacles so all three systems (3D render, sonar reveal, 2D collision)
+    // stay consistent across levels and re-loads.
+    const rockGeo    = await _rockLoadPromise;
+
+    // Guard: if loadLevel was called again while we were awaiting, a newer token
+    // has been issued.  Discard this build silently to prevent appending duplicate
+    // meshes/obstacles/revealObjs on top of the newer scene.
+    if (buildToken !== this._sceneBuildToken) return;
+    const rockSeed   = 1001 + (def.id - 1) * 1000;
+    const wallSeed   = 2001 + (def.id - 1) * 1000;
+    const debrisSeed = 3001 + (def.id - 1) * 1000;
+
+    const rocksR  = scatterRocks(rockSeed,   def.worldW, def.worldH, rockGeo);
+    const wallsR  = scatterWalls(wallSeed,   def.worldW, def.worldH);
+    const debrisR = scatterDebris(debrisSeed, def.worldW, def.worldH);
+
+    for (const sr of [rocksR, wallsR, debrisR]) {
+      for (const mesh of sr.meshes)         this.sceneGroup.add(mesh);
+      for (const re of sr.revealEntries)    this.revealObjs.push({ lines: re.lines, mat: re.mat, cx: re.cx, cy: re.cy, alpha: 0, baseAlpha: 0 });
+      for (const rect of sr.rects)          def.obstacles.push(rect);
+    }
+
+    // Transition to PLAYING after the async scatter is done
+    this.state = "PLAYING";
   }
 
   // ============================================================
