@@ -580,122 +580,223 @@ function buildStalkerGroup(): { group: THREE.Group; mats: THREE.LineBasicMateria
   return { group, mats };
 }
 
-// ---------- LEVIATHAN: massive segmented sea-serpent ----------
+// ---------- LEVIATHAN: Subnautica-inspired Ghost Leviathan ----------
+// Long serpentine body in neon blue with pulsing neon-red bioluminescent stripes,
+// four signature mandibles fanning out from the face, translucent fins.
 function buildLeviathanGroup(): { group: THREE.Group; mats: THREE.LineBasicMaterial[] } {
   const group = new THREE.Group();
   const mats: THREE.LineBasicMaterial[] = [];
-  const makeM = () => { const m = wireMat(0xFF2233); mats.push(m); return m; };
-  const bodyMat = new THREE.MeshBasicMaterial({ color: 0x441122, transparent: true, opacity: 0.4, blending: THREE.AdditiveBlending, depthWrite: false });
+  // Pulsing red bio-stripe materials — animated from updateEnemies via userData.bioMats
+  const bioMats: THREE.MeshBasicMaterial[] = [];
+  const NEON_BLUE = 0x00AAFF;
+  const NEON_BLUE_DEEP = 0x0066CC;
+  const NEON_RED = 0xFF2244;
 
-  // Body segments — 14 tapering spheres along -Z
-  const segCount = 14;
+  // Body wireframe material (neon blue, leathery silhouette)
+  const makeM = () => { const m = wireMat(NEON_BLUE); mats.push(m); return m; };
+  // Body solid fill (translucent dark blue for depth)
+  const bodyMat = new THREE.MeshBasicMaterial({
+    color: NEON_BLUE_DEEP, transparent: true, opacity: 0.35,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+
+  // ----- BODY: long ribbon of tapering segments along -Z -----
+  const segCount = 22;
+  const segSpacing = 1.9;
+  // Slight S-curve for the "charging" silhouette
+  const curve = (t: number) => Math.sin(t * Math.PI * 1.4) * 1.2;
   for (let i = 0; i < segCount; i++) {
     const t = i / (segCount - 1);
-    const r = 2.6 * (1 - t * 0.75); // tapers from 2.6 to ~0.65
+    // Bulges in middle (anglerfish-bulb body), tapers to thin tail
+    const bulge = Math.sin((1 - t) * Math.PI * 0.85);
+    const r = 0.7 + 2.0 * bulge;
     const segGeo = new THREE.SphereGeometry(r, 12, 9);
-    // Solid translucent fill
+    const z = -i * segSpacing;
+    const yOffset = curve(t);
+
     const segSolid = new THREE.Mesh(segGeo, bodyMat);
-    segSolid.position.set(0, 0, -i * 2.3);
+    segSolid.position.set(0, yOffset, z);
     group.add(segSolid);
-    // Wireframe outline
     const segWire = new THREE.LineSegments(new THREE.EdgesGeometry(segGeo), makeM());
     segWire.position.copy(segSolid.position);
     group.add(segWire);
+
+    // Red bioluminescent stripe rings encircling the body (skip tail end)
+    if (i > 0 && i < segCount - 3 && i % 2 === 0) {
+      const ringGeo = new THREE.TorusGeometry(r * 1.02, 0.10, 6, 20);
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: NEON_RED, transparent: true, opacity: 0.95,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      });
+      bioMats.push(ringMat);
+      const ring = new THREE.Mesh(ringGeo, ringMat);
+      ring.position.set(0, yOffset, z);
+      ring.rotation.y = Math.PI / 2; // ring plane perpendicular to body axis
+      group.add(ring);
+    }
+
+    // Glowing red dot lights along the spine — every 3 segments
+    if (i % 3 === 0 && i < segCount - 2) {
+      const dotMat = new THREE.MeshBasicMaterial({
+        color: NEON_RED, transparent: true, opacity: 1,
+        blending: THREE.AdditiveBlending,
+      });
+      bioMats.push(dotMat);
+      const dot = new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 8), dotMat);
+      dot.position.set(0, yOffset + r * 0.85, z);
+      group.add(dot);
+    }
   }
 
-  // HEAD — larger sphere at front, +Z
-  const headR = 3.4;
+  // ----- HEAD: larger neon-blue dome at front (+Z) -----
+  const headR = 2.6;
   const headGeo = new THREE.SphereGeometry(headR, 16, 12);
   const headSolid = new THREE.Mesh(
     headGeo,
-    new THREE.MeshBasicMaterial({ color: 0x882233, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false }),
+    new THREE.MeshBasicMaterial({
+      color: NEON_BLUE, transparent: true, opacity: 0.45,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    }),
   );
-  headSolid.position.z = 3.0;
+  headSolid.position.z = 2.4;
   group.add(headSolid);
-  const levHeadWire = new THREE.LineSegments(new THREE.EdgesGeometry(headGeo), makeM());
-  levHeadWire.position.z = 3.0;
-  group.add(levHeadWire);
+  const headWire = new THREE.LineSegments(new THREE.EdgesGeometry(headGeo), makeM());
+  headWire.position.z = 2.4;
+  group.add(headWire);
 
-  // Upper & lower jaws — two cones forming a gaping maw
-  const jawGeo = new THREE.ConeGeometry(2.8, 4.5, 10, 1, true);
-  const upperJaw = new THREE.LineSegments(new THREE.EdgesGeometry(jawGeo), makeM());
-  upperJaw.position.set(0, 0.8, 5.8);
-  upperJaw.rotation.x = Math.PI / 2 + 0.15;
-  group.add(upperJaw);
-  const lowerJaw = new THREE.LineSegments(new THREE.EdgesGeometry(jawGeo), makeM());
-  lowerJaw.position.set(0, -0.8, 5.8);
-  lowerJaw.rotation.x = Math.PI / 2 - 0.15;
-  group.add(lowerJaw);
+  // ----- FOUR MANDIBLES — signature Ghost Leviathan X-shape claws -----
+  // Each mandible is a long curved "claw" extending forward & outward from the face,
+  // meeting near the front. Built from a tapered cylinder + curved tip.
+  const mandibleMat = new THREE.MeshBasicMaterial({
+    color: NEON_BLUE, transparent: true, opacity: 0.55,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+  });
+  const mandibleEdgeMat = wireMat(NEON_BLUE);
+  mats.push(mandibleEdgeMat);
+  const mandibleAngles = [
+    { ax:  1, ay:  1 }, // upper-right
+    { ax: -1, ay:  1 }, // upper-left
+    { ax:  1, ay: -1 }, // lower-right
+    { ax: -1, ay: -1 }, // lower-left
+  ];
+  for (const { ax, ay } of mandibleAngles) {
+    // Base anchor on the face, pointing forward + outward
+    const mandible = new THREE.Group();
+    // Two tapered cone segments (base + curved tip) for the mandible
+    const baseGeo = new THREE.ConeGeometry(0.55, 5.2, 8, 1, true);
+    const baseSolid = new THREE.Mesh(baseGeo, mandibleMat);
+    baseSolid.position.set(0, 0, 2.5);
+    baseSolid.rotation.x = -Math.PI / 2;
+    mandible.add(baseSolid);
+    const baseWire = new THREE.LineSegments(new THREE.EdgesGeometry(baseGeo), mandibleEdgeMat);
+    baseWire.position.copy(baseSolid.position);
+    baseWire.rotation.copy(baseSolid.rotation);
+    mandible.add(baseWire);
+    // Tip — narrower curved-in cone meeting at the centerline
+    const tipGeo = new THREE.ConeGeometry(0.22, 3.4, 6, 1, true);
+    const tipSolid = new THREE.Mesh(tipGeo, mandibleMat);
+    // Curl tip back toward center (apex at +Z, narrowing)
+    tipSolid.position.set(-ax * 0.7, -ay * 0.7, 6.6);
+    tipSolid.rotation.x = -Math.PI / 2;
+    tipSolid.rotation.z = ax * ay * 0.45;
+    mandible.add(tipSolid);
+    const tipWire = new THREE.LineSegments(new THREE.EdgesGeometry(tipGeo), mandibleEdgeMat);
+    tipWire.position.copy(tipSolid.position);
+    tipWire.rotation.copy(tipSolid.rotation);
+    mandible.add(tipWire);
+    // Red bio-stripe along the mandible base
+    const stripeMat = new THREE.MeshBasicMaterial({
+      color: NEON_RED, transparent: true, opacity: 0.9,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    bioMats.push(stripeMat);
+    const stripe = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 4.5, 5), stripeMat);
+    stripe.position.set(0, 0.5, 2.7);
+    stripe.rotation.x = -Math.PI / 2;
+    mandible.add(stripe);
 
-  // Teeth — rows of sharp cones in the maw
-  const toothMat = new THREE.MeshBasicMaterial({ color: 0xFFEEDD, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending });
-  for (let i = 0; i < 14; i++) {
-    const a = (i / 14) * Math.PI * 2;
-    const tooth = new THREE.Mesh(new THREE.ConeGeometry(0.22, 1.1, 5), toothMat);
-    tooth.position.set(Math.cos(a) * 2.1, Math.sin(a) * 1.5, 6.6);
-    tooth.rotation.x = -Math.PI / 2;
-    group.add(tooth);
+    // Position & rotate the whole mandible to fan out diagonally from the face
+    mandible.position.set(ax * 1.2, ay * 1.2, 3.5);
+    mandible.rotation.y = ax * 0.35;
+    mandible.rotation.x = -ay * 0.35;
+    group.add(mandible);
   }
 
-  // EYES — large glowing yellow-red orbs
-  const eyeMat = new THREE.MeshBasicMaterial({ color: 0xFFAA22, blending: THREE.AdditiveBlending });
-  const eyeGeo = new THREE.SphereGeometry(0.55, 12, 10);
+  // ----- EYES — small glowing red orbs deep in the face -----
+  const eyeMat = new THREE.MeshBasicMaterial({
+    color: NEON_RED, blending: THREE.AdditiveBlending,
+  });
+  bioMats.push(eyeMat);
+  const eyeGeo = new THREE.SphereGeometry(0.32, 10, 8);
   const eyeL = new THREE.Mesh(eyeGeo, eyeMat);
-  eyeL.position.set(-1.8, 1.4, 4.9);
+  eyeL.position.set(-1.1, 0.6, 4.4);
   group.add(eyeL);
   const eyeR = new THREE.Mesh(eyeGeo, eyeMat);
-  eyeR.position.set(1.8, 1.4, 4.9);
+  eyeR.position.set(1.1, 0.6, 4.4);
   group.add(eyeR);
-  const eyeLightL = new THREE.PointLight(0xFFAA22, 1.2, 22);
+  const eyeLightL = new THREE.PointLight(NEON_RED, 1.4, 26);
   eyeLightL.position.copy(eyeL.position);
   group.add(eyeLightL);
-  const eyeLightR = new THREE.PointLight(0xFFAA22, 1.2, 22);
+  const eyeLightR = new THREE.PointLight(NEON_RED, 1.4, 26);
   eyeLightR.position.copy(eyeR.position);
   group.add(eyeLightR);
 
-  // DORSAL FIN — large sail along the back
+  // Always-on red rim light pulsing with the bio stripes
+  const rimLight = new THREE.PointLight(NEON_RED, 0.8, 40);
+  rimLight.position.set(0, 0, -segCount * segSpacing * 0.4);
+  group.add(rimLight);
+
+  // ----- DORSAL FRILL — translucent flowing sail along the back -----
+  const dorsalMat = new THREE.MeshBasicMaterial({
+    color: NEON_BLUE, transparent: true, opacity: 0.4,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+  });
   const dorsalShape = new THREE.Shape();
-  dorsalShape.moveTo(0, 0);
-  dorsalShape.lineTo(-8, 0);
-  dorsalShape.lineTo(-6, 4.2);
-  dorsalShape.lineTo(-2, 3.2);
-  dorsalShape.lineTo(0, 0);
-  const dorsalGeo = new THREE.ShapeGeometry(dorsalShape);
-  const dorsalMat = new THREE.MeshBasicMaterial({ color: 0xAA2244, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
-  const dorsal = new THREE.Mesh(dorsalGeo, dorsalMat);
-  dorsal.position.set(0, 2.4, 0);
+  dorsalShape.moveTo(2, 0);
+  dorsalShape.lineTo(-segCount * segSpacing + 4, 0);
+  dorsalShape.bezierCurveTo(
+    -segCount * segSpacing * 0.7, 1.4,
+    -segCount * segSpacing * 0.4, 3.2,
+    -2, 2.8,
+  );
+  dorsalShape.lineTo(2, 0);
+  const dorsal = new THREE.Mesh(new THREE.ShapeGeometry(dorsalShape), dorsalMat);
+  dorsal.position.set(0, 1.6, 0);
   dorsal.rotation.y = Math.PI / 2;
   group.add(dorsal);
 
-  // SIDE FINS — two large pectoral fins behind the head
+  // ----- PECTORAL FINS — two flowing fins near the head -----
   const finShape = new THREE.Shape();
   finShape.moveTo(0, 0);
-  finShape.lineTo(4.2, -0.5);
-  finShape.lineTo(3.6, -2.6);
-  finShape.lineTo(0, 0);
+  finShape.bezierCurveTo(2.8, 0.4, 4.2, -1.2, 4.6, -3.0);
+  finShape.bezierCurveTo(3.0, -2.4, 1.4, -1.4, 0, 0);
   const finGeo = new THREE.ShapeGeometry(finShape);
   const finL = new THREE.Mesh(finGeo, dorsalMat);
-  finL.position.set(-2.2, -0.3, 0.5);
+  finL.position.set(-1.8, -0.3, 1.4);
   finL.rotation.y = Math.PI / 2;
-  finL.rotation.x = 0.3;
+  finL.rotation.x = 0.4;
   group.add(finL);
   const finR = new THREE.Mesh(finGeo, dorsalMat);
-  finR.position.set(2.2, -0.3, 0.5);
+  finR.position.set(1.8, -0.3, 1.4);
   finR.rotation.y = -Math.PI / 2;
-  finR.rotation.x = 0.3;
+  finR.rotation.x = 0.4;
   group.add(finR);
 
-  // TAIL FLUKE — at the end of the body
+  // ----- TAIL FLUKE — sweeping translucent tail at the end -----
   const tailShape = new THREE.Shape();
   tailShape.moveTo(0, 0);
-  tailShape.lineTo(-2.6, 2.8);
-  tailShape.lineTo(-0.4, 0);
-  tailShape.lineTo(-2.6, -2.8);
-  tailShape.lineTo(0, 0);
+  tailShape.bezierCurveTo(-1.8, 2.6, -3.2, 3.4, -3.6, 3.2);
+  tailShape.bezierCurveTo(-2.4, 1.4, -1.0, 0.4, 0, 0);
+  tailShape.bezierCurveTo(-1.0, -0.4, -2.4, -1.4, -3.6, -3.2);
+  tailShape.bezierCurveTo(-3.2, -3.4, -1.8, -2.6, 0, 0);
   const tailGeo = new THREE.ShapeGeometry(tailShape);
   const tail = new THREE.Mesh(tailGeo, dorsalMat);
-  tail.position.set(0, 0, -(segCount - 1) * 2.3 - 1.2);
+  tail.position.set(0, 0, -(segCount - 1) * segSpacing - 0.8);
+  tail.rotation.y = Math.PI / 2;
   group.add(tail);
+
+  // Expose pulsing materials so updateEnemies can animate them
+  group.userData.bioMats = bioMats;
 
   return { group, mats };
 }
@@ -1581,6 +1682,14 @@ class EchoesGame {
             (child as THREE.PointLight).intensity = 0.3 + sonarA * 2.8;
           }
         });
+        // Pulse bioluminescent stripes (Ghost Leviathan) at medium speed
+        const bioMats = eobj.group.userData.bioMats as THREE.MeshBasicMaterial[] | undefined;
+        if (bioMats) {
+          // Medium pulse ~0.6 Hz, range 0.35 .. 1.0, brighter on sonar
+          const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 280);
+          const baseAlpha = 0.35 + pulse * 0.55;
+          for (const m of bioMats) m.opacity = Math.min(1, baseAlpha + sonarA * 0.4);
+        }
       }
     }
   }
