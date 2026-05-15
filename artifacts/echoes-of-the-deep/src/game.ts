@@ -1312,6 +1312,13 @@ function level3(): LevelData {
 // ============================================================
 // CUTSCENE DATA  (inter-level transition panels)
 // ============================================================
+const CS_INTRO: CutscenePanel[] = [
+  { text: "The boat never made it back.\n\nA storm came from nowhere.\nThe sea took them — all four.\n\nOnly Elias surfaced.", speaker: "NARRATOR", art: "surface" },
+  { text: "Three months in a hospital bed.\nThe doctors ran out of things to say.\n\n\"Brain activity — but no response.\nHe hears everything.\nHe just can't answer.\"", speaker: "NARRATOR", art: "hospital" },
+  { text: "Then: a signal.\nDeep beneath the Mariana Trench — 11,000 metres.\nThree distinct life-signs, motionless.\n\nA mission no one else would take.", speaker: "NARRATOR", art: "briefing" },
+  { text: '"They might still be down there.\n\nSara. Noah. Mia.\n\nI\'m coming."', speaker: "ELIAS", art: "ocean" },
+];
+
 const CS_SARA_TO_NOAH: CutscenePanel[] = [
   { text: "The ocean is silent.\n\nA pulse. A signal.\nAn echo of someone he loved.", speaker: "NARRATOR", art: "ocean" },
   { text: "A memory — unasked for:\nAfternoon light on the water.\nHer hand on his arm.\n\n\"You always come back.\"\n\nThe image cuts to black.", speaker: "NARRATOR", art: "crack" },
@@ -2434,6 +2441,7 @@ class EchoesGame {
   private csTextLen = 0; private csTextTimer = 0;
   private csPhase: "typing" | "waiting" = "typing";
   private csCallback: (() => void) | null = null;
+  private introPlayed = false;
 
   // Puzzle (L2)
   private puzzleDone = false;
@@ -2635,8 +2643,8 @@ class EchoesGame {
       this.keys[e.code] = true;
       this.ensureAudio();
       if (this.state === "MENU" && (e.code === "Space" || e.code === "Enter")) this.startGame();
-      if (this.state === "CUTSCENE" && (e.code === "Space" || e.code === "Enter")) this.advanceCS();
-      if (this.state === "GAME_OVER" && e.code === "Space") this.loadLevel(this.lvlIdx);
+      else if (this.state === "CUTSCENE" && (e.code === "Space" || e.code === "Enter")) this.advanceCS();
+      else if (this.state === "GAME_OVER" && e.code === "Space") this.loadLevel(this.lvlIdx);
       if (this.state === "PLAYING") {
         if (e.code === "KeyF") this.dropFlare();
         if (e.code === "KeyE") this.interact();
@@ -2656,7 +2664,7 @@ class EchoesGame {
       this.mouseHeld = true;
       this.mouseDownAt = Date.now();
       if (this.state === "MENU") this.startGame();
-      if (this.state === "CUTSCENE") this.advanceCS();
+      else if (this.state === "CUTSCENE") this.advanceCS();
     });
 
     this.threeCanvas.addEventListener("mouseup", () => {
@@ -2682,7 +2690,14 @@ class EchoesGame {
   // ============================================================
   // LEVEL MANAGEMENT
   // ============================================================
-  private startGame() { this.loadLevel(0); }
+  private startGame() {
+    if (!this.introPlayed) {
+      this.introPlayed = true;
+      this.startCS(CS_INTRO, () => this.loadLevel(0));
+    } else {
+      this.loadLevel(0);
+    }
+  }
 
   private loadLevel(idx: number) {
     this.lvlIdx = idx;
@@ -5388,6 +5403,86 @@ class EchoesGame {
       ctx.fillStyle = "rgba(190,182,155,0.6)"; ctx.fillRect(cx-205, cy-8, 410, 1);
       ctx.font = "9px serif"; ctx.fillStyle = "rgba(35,25,18,0.6)";
       ctx.fillText("He survived them all.", cx, cy+10);
+    } else if (art === "surface") {
+      ctx.fillStyle = "rgba(0,5,18,0.7)"; ctx.fillRect(x, y, w, h);
+      // Stormy sky gradient
+      const skyG = ctx.createLinearGradient(x, y, x, y + h * 0.55);
+      skyG.addColorStop(0, "rgba(8,12,30,0.9)");
+      skyG.addColorStop(1, "rgba(18,24,50,0.6)");
+      ctx.fillStyle = skyG; ctx.fillRect(x, y, w, h * 0.55);
+      // Ocean surface
+      const seaG = ctx.createLinearGradient(x, y + h * 0.55, x, y + h);
+      seaG.addColorStop(0, "rgba(0,25,80,0.88)");
+      seaG.addColorStop(1, "rgba(0,5,28,0.98)");
+      ctx.fillStyle = seaG; ctx.fillRect(x, y + h * 0.55, w, h * 0.45);
+      // Churning wave lines
+      for (let i = 0; i < 9; i++) {
+        const wy = y + h * 0.52 + i * 22 + Math.sin(t * 0.55 + i * 0.9) * 7;
+        const alpha = 0.12 + i * 0.025;
+        ctx.strokeStyle = `rgba(80,140,255,${alpha})`; ctx.lineWidth = 1.2;
+        ctx.beginPath(); ctx.moveTo(x, wy);
+        for (let wx = x; wx <= x + w; wx += 18)
+          ctx.lineTo(wx, wy + Math.sin((wx - x) / 55 + t * 0.7 + i) * 10 + Math.sin((wx - x) / 28 + t * 0.3) * 4);
+        ctx.stroke();
+      }
+      // Sinking boat wreckage — tilted hull
+      const bx = cx - 10 + Math.sin(t * 0.4) * 4, by = y + h * 0.54 + Math.sin(t * 0.35) * 3;
+      ctx.save(); ctx.translate(bx, by); ctx.rotate(0.38 + Math.sin(t * 0.2) * 0.05);
+      ctx.strokeStyle = "rgba(160,120,60,0.72)"; ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.moveTo(-46, 0); ctx.lineTo(46, 0); ctx.lineTo(32, 16); ctx.lineTo(-32, 16); ctx.closePath(); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(-10, 0); ctx.lineTo(-10, -28); ctx.lineTo(12, -8); ctx.stroke();
+      ctx.restore();
+      // Lightning flash
+      const lf = Math.max(0, Math.sin(t * 3.1 + 1.7) - 0.88) * 7;
+      if (lf > 0) {
+        ctx.strokeStyle = `rgba(200,220,255,${lf})`; ctx.lineWidth = 1.5;
+        ctx.beginPath(); ctx.moveTo(cx + 80, y + 20); ctx.lineTo(cx + 60, y + 55); ctx.lineTo(cx + 72, y + 55); ctx.lineTo(cx + 48, y + 90); ctx.stroke();
+      }
+      // Rain streaks
+      ctx.strokeStyle = "rgba(100,160,255,0.09)"; ctx.lineWidth = 1;
+      for (let r = 0; r < 32; r++) {
+        const rx = x + ((r * 53 + Math.floor(t * 12) * 17) % (w - 20));
+        const ry = y + ((r * 37 + Math.floor(t * 12) * 11) % (h * 0.5));
+        ctx.beginPath(); ctx.moveTo(rx, ry); ctx.lineTo(rx - 4, ry + 16); ctx.stroke();
+      }
+    } else if (art === "briefing") {
+      ctx.fillStyle = "rgba(2,8,20,0.85)"; ctx.fillRect(x, y, w, h);
+      // Grid overlay — tactical map feel
+      ctx.strokeStyle = "rgba(0,60,120,0.18)"; ctx.lineWidth = 1;
+      for (let gx = x; gx <= x + w; gx += 32) { ctx.beginPath(); ctx.moveTo(gx, y); ctx.lineTo(gx, y + h); ctx.stroke(); }
+      for (let gy = y; gy <= y + h; gy += 32) { ctx.beginPath(); ctx.moveTo(x, gy); ctx.lineTo(x + w, gy); ctx.stroke(); }
+      // Depth contour arcs
+      for (let d = 0; d < 5; d++) {
+        const r = 60 + d * 55;
+        const pulse = 0.08 + Math.sin(t * 0.8 + d * 0.6) * 0.04;
+        ctx.strokeStyle = `rgba(0,180,255,${pulse})`; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.arc(cx, cy + 30, r, Math.PI * 0.1, Math.PI * 0.9); ctx.stroke();
+      }
+      // Submarine silhouette — top-down schematic
+      const subCy = cy - 10 + Math.sin(t * 0.5) * 5;
+      ctx.strokeStyle = "rgba(0,220,255,0.65)"; ctx.shadowColor = "#00CCFF"; ctx.shadowBlur = 10; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.ellipse(cx, subCy, 50, 16, 0, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.ellipse(cx - 8, subCy - 9, 10, 5, -0.3, 0, Math.PI * 2); ctx.stroke();
+      ctx.shadowBlur = 0;
+      // Sonar ping from sub
+      const pr3 = ((t * 55) % 180) + 20;
+      const pa3 = Math.max(0, 0.4 - pr3 / 200);
+      ctx.strokeStyle = `rgba(0,255,180,${pa3})`; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(cx, subCy, pr3, 0, Math.PI * 2); ctx.stroke();
+      // Mission coordinates block
+      ctx.fillStyle = "rgba(0,30,60,0.75)"; ctx.fillRect(cx - 195, cy + 55, 170, 80);
+      ctx.strokeStyle = "rgba(0,180,255,0.35)"; ctx.lineWidth = 1; ctx.strokeRect(cx - 195, cy + 55, 170, 80);
+      ctx.font = "bold 9px monospace"; ctx.fillStyle = "rgba(0,220,255,0.75)"; ctx.textAlign = "left";
+      ctx.fillText("MISSION ORDER — CLASSIFIED", cx - 188, cy + 70);
+      ctx.fillStyle = "rgba(180,220,255,0.6)"; ctx.font = "9px monospace";
+      ctx.fillText("TARGET DEPTH:  11,034 m", cx - 188, cy + 86);
+      ctx.fillText("LIFE SIGNS:    3 (confirmed)", cx - 188, cy + 100);
+      ctx.fillText("OPERATOR:      E. VANCE", cx - 188, cy + 114);
+      ctx.fillText("STATUS:        SOLO / VOLUNTARY", cx - 188, cy + 128);
+      // Blinking cursor
+      if (Math.sin(t * 3) > 0) {
+        ctx.fillStyle = "rgba(0,255,180,0.7)"; ctx.fillRect(cx + 25, cy + 56, 6, 10);
+      }
     }
     ctx.restore();
   }
