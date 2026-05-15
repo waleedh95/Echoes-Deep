@@ -7,8 +7,6 @@ import * as THREE from "three";
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
-import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
-import * as SkeletonUtils from "three/addons/utils/SkeletonUtils.js";
 
 // ============================================================
 // CONSTANTS
@@ -444,69 +442,261 @@ function buildNoiseObjMesh(): THREE.Group {
   return group;
 }
 
+// ---------- DRIFTER: bioluminescent jellyfish-like creature ----------
 function buildDrifterGroup(): { group: THREE.Group; mats: THREE.LineBasicMaterial[] } {
   const group = new THREE.Group();
   const mats: THREE.LineBasicMaterial[] = [];
-  const makeM = () => { const m = wireMat(0xFF3333); mats.push(m); return m; };
-  const coreGeo = new THREE.IcosahedronGeometry(1.8, 0);
-  const coreEdge = new THREE.EdgesGeometry(coreGeo);
-  group.add(new THREE.LineSegments(coreEdge, makeM()));
-  for (let i = 0; i < 7; i++) {
-    const a = (i / 7) * Math.PI * 2, tilt = (Math.random() - 0.5) * 1.5;
-    const lGeo = new THREE.CylinderGeometry(0.04, 0.18, 2.5 + Math.random() * 1.5, 4);
-    const lEdge = new THREE.EdgesGeometry(lGeo);
-    const l = new THREE.LineSegments(lEdge, makeM());
-    l.rotation.z = tilt; l.rotation.y = a;
-    l.position.set(Math.cos(a) * 0.6, Math.sin(tilt) * 0.5, Math.sin(a) * 0.6);
-    group.add(l);
-  }
-  return { group, mats };
-}
+  const makeM = () => { const m = wireMat(0xFF3344); mats.push(m); return m; };
 
-function buildStalkerGroup(): { group: THREE.Group; mats: THREE.LineBasicMaterial[] } {
-  const group = new THREE.Group();
-  const mats: THREE.LineBasicMaterial[] = [];
-  const makeM = () => { const m = wireMat(0xFF3333); mats.push(m); return m; };
-  const bGeo = new THREE.SphereGeometry(1.1, 8, 8);
-  const bEdge = new THREE.EdgesGeometry(bGeo);
-  const body = new THREE.LineSegments(bEdge, makeM());
-  body.scale.y = 2.2;
-  group.add(body);
-  for (let i = 0; i < 5; i++) {
-    const a = (i / 5) * Math.PI * 2;
-    const tGeo = new THREE.CylinderGeometry(0.025, 0.12, 2.8 + Math.random() * 1.5, 4);
-    const tEdge = new THREE.EdgesGeometry(tGeo);
-    const t = new THREE.LineSegments(tEdge, makeM());
-    t.position.set(Math.cos(a) * 0.5, -2.4, Math.sin(a) * 0.5);
-    t.rotation.z = Math.cos(a) * 0.55;
-    t.rotation.x = Math.sin(a) * 0.55;
+  // Bell (translucent dome) — solid additive mesh so it's visible in the dark
+  const bellGeo = new THREE.SphereGeometry(1.6, 14, 10, 0, Math.PI * 2, 0, Math.PI * 0.55);
+  const bellSolid = new THREE.Mesh(
+    bellGeo,
+    new THREE.MeshBasicMaterial({ color: 0xFF2244, transparent: true, opacity: 0.18, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }),
+  );
+  group.add(bellSolid);
+  // Bell wireframe outline
+  group.add(new THREE.LineSegments(new THREE.EdgesGeometry(bellGeo), makeM()));
+
+  // Glowing core inside the bell
+  const coreSolid = new THREE.Mesh(
+    new THREE.SphereGeometry(0.55, 10, 8),
+    new THREE.MeshBasicMaterial({ color: 0xFFAA66, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending }),
+  );
+  coreSolid.position.y = 0.4;
+  group.add(coreSolid);
+  const coreLight = new THREE.PointLight(0xFF6644, 1.2, 14);
+  coreLight.position.set(0, 0.4, 0);
+  group.add(coreLight);
+
+  // Ring of trailing tentacles (thin tapered cylinders with curl)
+  for (let i = 0; i < 10; i++) {
+    const a = (i / 10) * Math.PI * 2;
+    const len = 2.6 + Math.random() * 1.4;
+    const tGeo = new THREE.CylinderGeometry(0.03, 0.10, len, 5);
+    const t = new THREE.LineSegments(new THREE.EdgesGeometry(tGeo), makeM());
+    t.position.set(Math.cos(a) * 1.2, -len / 2 - 0.1, Math.sin(a) * 1.2);
+    t.rotation.z = Math.cos(a) * 0.25;
+    t.rotation.x = Math.sin(a) * 0.25;
     group.add(t);
   }
   return { group, mats };
 }
 
-function buildLeviathanGroup(): { group: THREE.Group; mats: THREE.LineBasicMaterial[] } {
+// ---------- STALKER: anglerfish-like predator with lure & jaws ----------
+function buildStalkerGroup(): { group: THREE.Group; mats: THREE.LineBasicMaterial[] } {
   const group = new THREE.Group();
   const mats: THREE.LineBasicMaterial[] = [];
   const makeM = () => { const m = wireMat(0xFF3333); mats.push(m); return m; };
-  for (let i = 0; i < 12; i++) {
-    const r = 3 + i * 0.55;
-    const sGeo = new THREE.SphereGeometry(r, 8, 6);
-    const sEdge = new THREE.EdgesGeometry(sGeo);
-    const seg = new THREE.LineSegments(sEdge, makeM());
-    seg.position.z = -i * 4.5;
-    group.add(seg);
+
+  // Body — elongated ellipsoid (head at +Z front, tail at -Z back)
+  const bodyGeo = new THREE.SphereGeometry(1.0, 14, 10);
+  const bodySolid = new THREE.Mesh(
+    bodyGeo,
+    new THREE.MeshBasicMaterial({ color: 0x661122, transparent: true, opacity: 0.45, blending: THREE.AdditiveBlending, depthWrite: false }),
+  );
+  bodySolid.scale.set(1.0, 0.85, 2.4);
+  group.add(bodySolid);
+  const bodyWire = new THREE.LineSegments(new THREE.EdgesGeometry(bodyGeo), makeM());
+  bodyWire.scale.set(1.0, 0.85, 2.4);
+  group.add(bodyWire);
+
+  // Head — slightly larger sphere at front
+  const headGeo = new THREE.SphereGeometry(0.85, 12, 10);
+  const headSolid = new THREE.Mesh(
+    headGeo,
+    new THREE.MeshBasicMaterial({ color: 0x882233, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false }),
+  );
+  headSolid.position.z = 2.0;
+  group.add(headSolid);
+  const headWire = new THREE.LineSegments(new THREE.EdgesGeometry(headGeo), makeM());
+  headWire.position.z = 2.0;
+  group.add(headWire);
+
+  // Jaw — cone pointing forward (open mouth)
+  const jawGeo = new THREE.ConeGeometry(0.75, 1.4, 8, 1, true);
+  const jawWire = new THREE.LineSegments(new THREE.EdgesGeometry(jawGeo), makeM());
+  jawWire.position.z = 2.8;
+  jawWire.rotation.x = Math.PI / 2;
+  group.add(jawWire);
+
+  // Teeth — small cones around the jaw rim
+  const toothMat = new THREE.MeshBasicMaterial({ color: 0xFFEEDD, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending });
+  for (let i = 0; i < 10; i++) {
+    const a = (i / 10) * Math.PI * 2;
+    const tooth = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.32, 4), toothMat);
+    tooth.position.set(Math.cos(a) * 0.55, Math.sin(a) * 0.4, 3.05);
+    tooth.rotation.x = -Math.PI / 2;
+    group.add(tooth);
   }
-  // Eyes — always slightly visible (emissive spheres, not wireframe)
-  const eyeM = new THREE.MeshBasicMaterial({ color: 0x00FFFF });
-  const eyeG = new THREE.SphereGeometry(0.55, 10, 10);
-  const eyeL = new THREE.Mesh(eyeG, eyeM); eyeL.position.set(-3, 1, 0);
-  const eyeR = new THREE.Mesh(eyeG.clone(), eyeM.clone()); eyeR.position.set(3, 1, 0);
-  group.add(eyeL); group.add(eyeR);
-  const eyeLightL = new THREE.PointLight(0x00FFFF, 0.8, 16);
-  eyeLightL.position.copy(eyeL.position); group.add(eyeLightL);
-  const eyeLightR = new THREE.PointLight(0x00FFFF, 0.8, 16);
-  eyeLightR.position.copy(eyeR.position); group.add(eyeLightR);
+
+  // Lure — bioluminescent bulb on a stalk above the head
+  const stalk = new THREE.LineSegments(
+    new THREE.EdgesGeometry(new THREE.CylinderGeometry(0.04, 0.04, 1.2, 4)),
+    makeM(),
+  );
+  stalk.position.set(0, 0.9, 1.9);
+  stalk.rotation.x = -0.4;
+  group.add(stalk);
+  const bulbSolid = new THREE.Mesh(
+    new THREE.SphereGeometry(0.18, 10, 8),
+    new THREE.MeshBasicMaterial({ color: 0xFFEE66, blending: THREE.AdditiveBlending }),
+  );
+  bulbSolid.position.set(0, 1.45, 2.4);
+  group.add(bulbSolid);
+  const bulbLight = new THREE.PointLight(0xFFCC44, 1.1, 10);
+  bulbLight.position.copy(bulbSolid.position);
+  group.add(bulbLight);
+
+  // Eyes — glowing yellow dots on the head
+  const eyeMat = new THREE.MeshBasicMaterial({ color: 0xFFDD44, blending: THREE.AdditiveBlending });
+  const eyeGeo = new THREE.SphereGeometry(0.13, 8, 8);
+  const eyeL = new THREE.Mesh(eyeGeo, eyeMat);
+  eyeL.position.set(-0.45, 0.35, 2.55);
+  group.add(eyeL);
+  const eyeR = new THREE.Mesh(eyeGeo, eyeMat);
+  eyeR.position.set(0.45, 0.35, 2.55);
+  group.add(eyeR);
+
+  // Side fins — flat triangles
+  const finGeo = new THREE.PlaneGeometry(1.4, 0.9);
+  const finMat = new THREE.MeshBasicMaterial({ color: 0xAA3344, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+  const finL = new THREE.Mesh(finGeo, finMat);
+  finL.position.set(-1.0, 0, 0.2);
+  finL.rotation.y = -0.6;
+  group.add(finL);
+  const finR = new THREE.Mesh(finGeo, finMat);
+  finR.position.set(1.0, 0, 0.2);
+  finR.rotation.y = 0.6;
+  group.add(finR);
+
+  // Tail fluke
+  const tailGeo = new THREE.PlaneGeometry(1.1, 1.6);
+  const tail = new THREE.Mesh(tailGeo, finMat);
+  tail.position.set(0, 0, -2.6);
+  tail.rotation.x = Math.PI / 2;
+  group.add(tail);
+
+  return { group, mats };
+}
+
+// ---------- LEVIATHAN: massive segmented sea-serpent ----------
+function buildLeviathanGroup(): { group: THREE.Group; mats: THREE.LineBasicMaterial[] } {
+  const group = new THREE.Group();
+  const mats: THREE.LineBasicMaterial[] = [];
+  const makeM = () => { const m = wireMat(0xFF2233); mats.push(m); return m; };
+  const bodyMat = new THREE.MeshBasicMaterial({ color: 0x441122, transparent: true, opacity: 0.4, blending: THREE.AdditiveBlending, depthWrite: false });
+
+  // Body segments — 14 tapering spheres along -Z
+  const segCount = 14;
+  for (let i = 0; i < segCount; i++) {
+    const t = i / (segCount - 1);
+    const r = 2.6 * (1 - t * 0.75); // tapers from 2.6 to ~0.65
+    const segGeo = new THREE.SphereGeometry(r, 12, 9);
+    // Solid translucent fill
+    const segSolid = new THREE.Mesh(segGeo, bodyMat);
+    segSolid.position.set(0, 0, -i * 2.3);
+    group.add(segSolid);
+    // Wireframe outline
+    const segWire = new THREE.LineSegments(new THREE.EdgesGeometry(segGeo), makeM());
+    segWire.position.copy(segSolid.position);
+    group.add(segWire);
+  }
+
+  // HEAD — larger sphere at front, +Z
+  const headR = 3.4;
+  const headGeo = new THREE.SphereGeometry(headR, 16, 12);
+  const headSolid = new THREE.Mesh(
+    headGeo,
+    new THREE.MeshBasicMaterial({ color: 0x882233, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false }),
+  );
+  headSolid.position.z = 3.0;
+  group.add(headSolid);
+  const levHeadWire = new THREE.LineSegments(new THREE.EdgesGeometry(headGeo), makeM());
+  levHeadWire.position.z = 3.0;
+  group.add(levHeadWire);
+
+  // Upper & lower jaws — two cones forming a gaping maw
+  const jawGeo = new THREE.ConeGeometry(2.8, 4.5, 10, 1, true);
+  const upperJaw = new THREE.LineSegments(new THREE.EdgesGeometry(jawGeo), makeM());
+  upperJaw.position.set(0, 0.8, 5.8);
+  upperJaw.rotation.x = Math.PI / 2 + 0.15;
+  group.add(upperJaw);
+  const lowerJaw = new THREE.LineSegments(new THREE.EdgesGeometry(jawGeo), makeM());
+  lowerJaw.position.set(0, -0.8, 5.8);
+  lowerJaw.rotation.x = Math.PI / 2 - 0.15;
+  group.add(lowerJaw);
+
+  // Teeth — rows of sharp cones in the maw
+  const toothMat = new THREE.MeshBasicMaterial({ color: 0xFFEEDD, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending });
+  for (let i = 0; i < 14; i++) {
+    const a = (i / 14) * Math.PI * 2;
+    const tooth = new THREE.Mesh(new THREE.ConeGeometry(0.22, 1.1, 5), toothMat);
+    tooth.position.set(Math.cos(a) * 2.1, Math.sin(a) * 1.5, 6.6);
+    tooth.rotation.x = -Math.PI / 2;
+    group.add(tooth);
+  }
+
+  // EYES — large glowing yellow-red orbs
+  const eyeMat = new THREE.MeshBasicMaterial({ color: 0xFFAA22, blending: THREE.AdditiveBlending });
+  const eyeGeo = new THREE.SphereGeometry(0.55, 12, 10);
+  const eyeL = new THREE.Mesh(eyeGeo, eyeMat);
+  eyeL.position.set(-1.8, 1.4, 4.9);
+  group.add(eyeL);
+  const eyeR = new THREE.Mesh(eyeGeo, eyeMat);
+  eyeR.position.set(1.8, 1.4, 4.9);
+  group.add(eyeR);
+  const eyeLightL = new THREE.PointLight(0xFFAA22, 1.2, 22);
+  eyeLightL.position.copy(eyeL.position);
+  group.add(eyeLightL);
+  const eyeLightR = new THREE.PointLight(0xFFAA22, 1.2, 22);
+  eyeLightR.position.copy(eyeR.position);
+  group.add(eyeLightR);
+
+  // DORSAL FIN — large sail along the back
+  const dorsalShape = new THREE.Shape();
+  dorsalShape.moveTo(0, 0);
+  dorsalShape.lineTo(-8, 0);
+  dorsalShape.lineTo(-6, 4.2);
+  dorsalShape.lineTo(-2, 3.2);
+  dorsalShape.lineTo(0, 0);
+  const dorsalGeo = new THREE.ShapeGeometry(dorsalShape);
+  const dorsalMat = new THREE.MeshBasicMaterial({ color: 0xAA2244, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+  const dorsal = new THREE.Mesh(dorsalGeo, dorsalMat);
+  dorsal.position.set(0, 2.4, 0);
+  dorsal.rotation.y = Math.PI / 2;
+  group.add(dorsal);
+
+  // SIDE FINS — two large pectoral fins behind the head
+  const finShape = new THREE.Shape();
+  finShape.moveTo(0, 0);
+  finShape.lineTo(4.2, -0.5);
+  finShape.lineTo(3.6, -2.6);
+  finShape.lineTo(0, 0);
+  const finGeo = new THREE.ShapeGeometry(finShape);
+  const finL = new THREE.Mesh(finGeo, dorsalMat);
+  finL.position.set(-2.2, -0.3, 0.5);
+  finL.rotation.y = Math.PI / 2;
+  finL.rotation.x = 0.3;
+  group.add(finL);
+  const finR = new THREE.Mesh(finGeo, dorsalMat);
+  finR.position.set(2.2, -0.3, 0.5);
+  finR.rotation.y = -Math.PI / 2;
+  finR.rotation.x = 0.3;
+  group.add(finR);
+
+  // TAIL FLUKE — at the end of the body
+  const tailShape = new THREE.Shape();
+  tailShape.moveTo(0, 0);
+  tailShape.lineTo(-2.6, 2.8);
+  tailShape.lineTo(-0.4, 0);
+  tailShape.lineTo(-2.6, -2.8);
+  tailShape.lineTo(0, 0);
+  const tailGeo = new THREE.ShapeGeometry(tailShape);
+  const tail = new THREE.Mesh(tailGeo, dorsalMat);
+  tail.position.set(0, 0, -(segCount - 1) * 2.3 - 1.2);
+  group.add(tail);
+
   return { group, mats };
 }
 
@@ -551,7 +741,9 @@ function buildOdysseyShip(): THREE.Group {
 
   // Hull (long box, oriented along X — the player approaches from the front so this is broadside)
   const hullGeo = new THREE.BoxGeometry(7, 1.6, 1.8);
-  group.add(new THREE.LineSegments(new THREE.EdgesGeometry(hullGeo), nextMat())).position.set(0, 0.8, 0);
+  const hullWire = new THREE.LineSegments(new THREE.EdgesGeometry(hullGeo), nextMat());
+  hullWire.position.set(0, 0.8, 0);
+  group.add(hullWire);
   // Bow taper (front of ship)
   const bowGeo = new THREE.BoxGeometry(1.4, 1.2, 1.2);
   const bow = new THREE.LineSegments(new THREE.EdgesGeometry(bowGeo), nextMat());
@@ -742,43 +934,6 @@ class EchoesGame {
   private ping3Ds: Ping3D[] = [];
   private flareMeshes: FlareMesh[] = [];
   private particleSystem: THREE.Points | null = null;
-  private leviathanModelPromise: Promise<THREE.Object3D> | null = null;
-  private levelBuildToken = 0; // bumped each build3DScene; async work compares before mutating
-
-  private async getLeviathanModelClone(): Promise<THREE.Object3D> {
-    if (!this.leviathanModelPromise) {
-      const url = `${import.meta.env.BASE_URL}leviathan.glb`;
-      // eslint-disable-next-line no-console
-      console.log("[leviathan] loading", url);
-      const p = new Promise<THREE.Object3D>((resolve, reject) => {
-        const loader = new GLTFLoader();
-        loader.load(
-          url,
-          (gltf) => {
-            // eslint-disable-next-line no-console
-            console.log("[leviathan] loaded", gltf.scene);
-            resolve(gltf.scene);
-          },
-          (xhr) => {
-            if (xhr.total) {
-              // eslint-disable-next-line no-console
-              console.log(`[leviathan] ${Math.round((xhr.loaded / xhr.total) * 100)}%`);
-            }
-          },
-          (err) => {
-            // eslint-disable-next-line no-console
-            console.error("[leviathan] load error:", err);
-            reject(err);
-          },
-        );
-      });
-      // Self-heal: on failure, clear the cache so a later level entry can retry.
-      p.catch(() => { if (this.leviathanModelPromise === p) this.leviathanModelPromise = null; });
-      this.leviathanModelPromise = p;
-    }
-    const scene = await this.leviathanModelPromise;
-    return SkeletonUtils.clone(scene);
-  }
 
   // Mouse look (camera-relative)
   private yaw = Math.PI;   // start facing into tunnel (+Z)
@@ -949,7 +1104,8 @@ class EchoesGame {
     this.threeCanvas.addEventListener("mousemove", (e) => {
       if (this.state === "PLAYING" || this.state === "CHOICE") {
         this.yaw -= e.movementX * MOUSE_SENS;
-        this.pitch += e.movementY * MOUSE_SENS;
+        // Mouse up = look up, mouse down = look down (standard FPS)
+        this.pitch -= e.movementY * MOUSE_SENS;
         this.pitch = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, this.pitch));
       }
     });
@@ -1015,7 +1171,6 @@ class EchoesGame {
 
   private build3DScene(def: LevelData) {
     // Bump the build token so any in-flight async work from a prior level is ignored.
-    const buildToken = ++this.levelBuildToken;
     // Dispose previous scene content recursively (geometries + materials + textures)
     this.sceneGroup.traverse((obj) => {
       const g = (obj as THREE.Mesh | THREE.LineSegments | THREE.Points | THREE.Sprite).geometry as THREE.BufferGeometry | undefined;
@@ -1049,7 +1204,7 @@ class EchoesGame {
     let pi = 0;
     for (const rect of def.obstacles) {
       const c = wallPalette[pi++ % wallPalette.length];
-      const baseAlpha = 0; // sonar-only reveal
+      const baseAlpha = 0.10; // always faintly visible
       const geo = new THREE.BoxGeometry(rect.w * WS, WALL_H, rect.h * WS);
       const edges = new THREE.EdgesGeometry(geo);
       const mat = wireMat(c, baseAlpha);
@@ -1068,14 +1223,14 @@ class EchoesGame {
         const cellW = Math.min(FLOOR_CELL, def.worldW - col * FLOOR_CELL);
         const cellH = Math.min(FLOOR_CELL, def.worldH - row * FLOOR_CELL);
         const { lines, mat } = buildFloorCell(cx, cy, cellW, cellH);
-        mat.opacity = 0;
+        mat.opacity = 0.06;
         this.sceneGroup.add(lines);
-        this.revealObjs.push({ lines, mat, cx, cy, alpha: 0, baseAlpha: 0 });
+        this.revealObjs.push({ lines, mat, cx, cy, alpha: 0.06, baseAlpha: 0.06 });
         if ((col + row) % 2 === 0) {
           const { lines: cl, mat: cm } = buildCeilCell(cx, cy, cellW * 2, cellH * 2);
-          cm.opacity = 0;
+          cm.opacity = 0.05;
           this.sceneGroup.add(cl);
-          this.revealObjs.push({ lines: cl, mat: cm, cx, cy, alpha: 0, baseAlpha: 0 });
+          this.revealObjs.push({ lines: cl, mat: cm, cx, cy, alpha: 0.05, baseAlpha: 0.05 });
         }
       }
     }
@@ -1088,10 +1243,10 @@ class EchoesGame {
       const h = 0.8 + Math.random() * 3;
       const onFloor = Math.random() > 0.5;
       const { lines, mat } = buildStalactite(x3d, z3d, onFloor, h);
-      mat.opacity = 0;
+      mat.opacity = 0.08;
       this.sceneGroup.add(lines);
       const cx2d = x3d / WS, cy2d = z3d / WS;
-      this.revealObjs.push({ lines, mat, cx: cx2d, cy: cy2d, alpha: 0, baseAlpha: 0 });
+      this.revealObjs.push({ lines, mat, cx: cx2d, cy: cy2d, alpha: 0.08, baseAlpha: 0.08 });
     }
 
     // Bioluminescent point lights scattered throughout (always visible — deep ocean)
@@ -1124,31 +1279,12 @@ class EchoesGame {
       if (enemy.type === "drifter") built = buildDrifterGroup();
       else if (enemy.type === "stalker") built = buildStalkerGroup();
       else {
-        // Leviathan: load FF7 Remake GLB model (fire-and-forget; placeholder until ready)
-        const group = new THREE.Group();
-        built = { group, mats: [] };
-        // Pulsing red rim light so it still reads on sonar
-        const rim = new THREE.PointLight(0xFF3344, 1.4, 30);
-        rim.position.set(0, 4, 0);
-        group.add(rim);
-        this.getLeviathanModelClone().then((model) => {
-          // Stale-load guard: drop the result if a new level has been built since.
-          if (buildToken !== this.levelBuildToken) return;
-          // Auto-fit to a target size, then drop to the floor
-          const box = new THREE.Box3().setFromObject(model);
-          const size = box.getSize(new THREE.Vector3());
-          const maxDim = Math.max(size.x, size.y, size.z) || 1;
-          const targetMax = 14; // big creature
-          const s = targetMax / maxDim;
-          model.scale.setScalar(s);
-          // Recenter horizontally + put feet on ground
-          const center = box.getCenter(new THREE.Vector3()).multiplyScalar(s);
-          model.position.set(-center.x, -box.min.y * s, -center.z);
-          group.add(model);
-        }).catch((err) => {
-          // eslint-disable-next-line no-console
-          console.error("Failed to load leviathan model:", err);
-        });
+        // Leviathan — large procedural sea-serpent
+        built = buildLeviathanGroup();
+        // Always-on red rim light so the silhouette reads in the dark
+        const rim = new THREE.PointLight(0xFF3344, 1.2, 36);
+        rim.position.set(0, 3, 0);
+        built.group.add(rim);
       }
       const labelY = enemy.type === "leviathan" ? 11 : 3.4;
       const label = makeBillboard("THREAT DETECTED", "#FF4444", enemy.type === "leviathan" ? 6.5 : 4.2, enemy.type === "leviathan" ? 1.4 : 1.0);
