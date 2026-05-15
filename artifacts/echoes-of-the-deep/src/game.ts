@@ -6015,8 +6015,10 @@ class EchoesGame {
 
     // "DEPTH INCREASING" alert
     const lvlNames = ['LEVEL II — THE WIFE', 'LEVEL III — FIRST SON', 'LEVEL IV — SECOND CHILD'];
+    const searchNames = ['Sara', 'Noah', 'Mia'];
     const depthVals = [35, 65, 95];
     const lvlLabel = lvlNames[this.transitionTargetLvl] ?? `LEVEL ${this.transitionTargetLvl + 1}`;
+    const searchName = searchNames[this.transitionTargetLvl] ?? null;
     const targetDepth = depthVals[this.transitionTargetLvl] ?? 0;
 
     ctx.shadowColor = '#00AAFF'; ctx.shadowBlur = 20;
@@ -6033,6 +6035,14 @@ class EchoesGame {
     // Thin separator
     ctx.strokeStyle = 'rgba(0,120,180,0.28)'; ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(CX + 40, CY + 110); ctx.lineTo(CX + CW - 40, CY + 110); ctx.stroke();
+
+    // "Searching for X…" — family name reminder
+    if (searchName) {
+      ctx.shadowColor = '#C8A84B'; ctx.shadowBlur = 10;
+      ctx.fillStyle = 'rgba(200,168,75,0.82)'; ctx.font = 'italic 13px monospace';
+      ctx.fillText(`Searching for ${searchName}\u2026`, GAME_W/2, CY + 126);
+      ctx.shadowBlur = 0;
+    }
 
     // ── Analog depth gauge sweep ──
     // Needle sweeps from 0 to targetDepth over the first 70% of transition
