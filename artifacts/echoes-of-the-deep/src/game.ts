@@ -49,9 +49,9 @@ interface Vec2 { x: number; y: number }
 interface Rect { x: number; y: number; w: number; h: number }
 
 interface Ping { x: number; y: number; radius: number; maxRadius: number; type: "small" | "large" | "flare" }
-interface RevealObj { lines: THREE.LineSegments; mat: THREE.LineBasicMaterial; cx: number; cy: number; alpha: number }
-interface EnemyObj { group: THREE.Group; mats: THREE.LineBasicMaterial[] }
-interface PodObj { group: THREE.Group; mat: THREE.LineBasicMaterial; light: THREE.PointLight }
+interface RevealObj { lines: THREE.LineSegments; mat: THREE.LineBasicMaterial; cx: number; cy: number; alpha: number; baseAlpha: number }
+interface EnemyObj { group: THREE.Group; mats: THREE.LineBasicMaterial[]; label: THREE.Sprite; labelMat: THREE.SpriteMaterial }
+interface PodObj { group: THREE.Group; mat: THREE.LineBasicMaterial; light: THREE.PointLight; label: THREE.Sprite; labelMat: THREE.SpriteMaterial }
 interface Ping3D { sphere: THREE.Mesh; mat: THREE.MeshBasicMaterial; maxR: number; radius: number; ox: number; oy: number }
 interface FlareMesh { mesh: THREE.Mesh; light: THREE.PointLight }
 
@@ -179,6 +179,34 @@ class AudioSys {
     const osc = this.ctx.createOscillator(), g = this.ctx.createGain();
     osc.type = "sine"; osc.frequency.value = 440; g.gain.value = 0.26;
     osc.connect(g); g.connect(this.master); osc.start(); osc.stop(this.ctx.currentTime + 4);
+  }
+  speak(text: string) {
+    if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
+    if (typeof SpeechSynthesisUtterance === "undefined") return;
+    // Strip bracketed tags first ([COMM], [HULL BREACH], etc.)
+    const noBrackets = text.replace(/\[[^\]]*\]/g, "").replace(/\s+/g, " ").trim();
+    if (!noBrackets) return;
+    let voice: "elias" | "narrator" | "child" | "doctor" = "narrator";
+    let speakText = noBrackets;
+    // Case-insensitive speaker prefix (handles "Elias: ...", "ELIAS: ...", "Liam: ...", etc.)
+    const m = noBrackets.match(/^([A-Za-z]+)\s*:\s*(.+)$/);
+    if (m) {
+      const sp = m[1].toUpperCase();
+      // Strip surrounding quotes (straight or curly) and trailing/leading spaces
+      speakText = m[2].replace(/^["'\u201C\u201D]+|["'\u201C\u201D]+$/g, "").trim();
+      if (sp === "ELIAS") voice = "elias";
+      else if (sp === "LIAM" || sp === "MIA" || sp === "NOAH" || sp === "SARA") voice = "child";
+      else if (sp === "DOCTOR") voice = "doctor";
+    }
+    if (!speakText) return;
+    try {
+      const utter = new SpeechSynthesisUtterance(speakText);
+      utter.rate = voice === "narrator" ? 0.78 : 0.88;
+      utter.pitch = voice === "child" ? 1.55 : voice === "narrator" ? 0.7 : voice === "doctor" ? 0.78 : 0.85;
+      utter.volume = 0.7;
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utter);
+    } catch { /* ignore — partial-support browsers */ }
   }
 }
 
@@ -480,6 +508,120 @@ function buildLeviathanGroup(): { group: THREE.Group; mats: THREE.LineBasicMater
   return { group, mats };
 }
 
+function makeTextTexture(text: string, w: number, h: number, color = "#00FFFF", bgGlow = true): THREE.CanvasTexture {
+  const canvas = document.createElement("canvas");
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext("2d")!;
+  ctx.clearRect(0, 0, w, h);
+  const lines = text.split("\n");
+  const fontSize = Math.floor(h / (lines.length * 1.6));
+  ctx.font = `bold ${fontSize}px monospace`;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  if (bgGlow) {
+    ctx.shadowColor = color; ctx.shadowBlur = fontSize * 0.7;
+  }
+  ctx.fillStyle = color;
+  const lh = fontSize * 1.25;
+  lines.forEach((line, i) => {
+    ctx.fillText(line, w / 2, h / 2 + (i - (lines.length - 1) / 2) * lh);
+  });
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  return tex;
+}
+
+function makeBillboard(text: string, color: string, scaleW = 5, scaleH = 1.2): THREE.Sprite {
+  const tex = makeTextTexture(text, 512, 128, color, true);
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0 });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(scaleW, scaleH, 1);
+  return sprite;
+}
+
+function buildOdysseyShip(): THREE.Group {
+  const group = new THREE.Group();
+  const colors = [0x00FFFF, 0x00DDFF, 0x55AAFF, 0x88FF88, 0xFF88FF, 0x44FFAA];
+  let mi = 0;
+  const nextMat = () => {
+    const m = wireMat(colors[mi++ % colors.length], 0.18);
+    return m;
+  };
+
+  // Hull (long box, oriented along X — the player approaches from the front so this is broadside)
+  const hullGeo = new THREE.BoxGeometry(7, 1.6, 1.8);
+  group.add(new THREE.LineSegments(new THREE.EdgesGeometry(hullGeo), nextMat())).position.set(0, 0.8, 0);
+  // Bow taper (front of ship)
+  const bowGeo = new THREE.BoxGeometry(1.4, 1.2, 1.2);
+  const bow = new THREE.LineSegments(new THREE.EdgesGeometry(bowGeo), nextMat());
+  bow.position.set(4.0, 0.7, 0); group.add(bow);
+  // Deck superstructure (lower)
+  const deckGeo = new THREE.BoxGeometry(4.0, 0.8, 1.4);
+  const deck = new THREE.LineSegments(new THREE.EdgesGeometry(deckGeo), nextMat());
+  deck.position.set(-0.5, 1.95, 0); group.add(deck);
+  // Bridge (raised cabin)
+  const bridgeGeo = new THREE.BoxGeometry(2.0, 1.0, 1.2);
+  const bridge = new THREE.LineSegments(new THREE.EdgesGeometry(bridgeGeo), nextMat());
+  bridge.position.set(-0.8, 2.85, 0); group.add(bridge);
+  // Smokestack
+  const stackGeo = new THREE.CylinderGeometry(0.28, 0.34, 1.2, 6);
+  const stack = new THREE.LineSegments(new THREE.EdgesGeometry(stackGeo), nextMat());
+  stack.position.set(-1.6, 3.85, 0); group.add(stack);
+  // Crane / cargo arm
+  const armGeo = new THREE.BoxGeometry(2.6, 0.12, 0.12);
+  const arm = new THREE.LineSegments(new THREE.EdgesGeometry(armGeo), nextMat());
+  arm.position.set(1.6, 3.2, 0); arm.rotation.z = -0.35; group.add(arm);
+  // Mast (tall thin pole)
+  const mastGeo = new THREE.CylinderGeometry(0.06, 0.06, 3.5, 4);
+  const mast = new THREE.LineSegments(new THREE.EdgesGeometry(mastGeo), nextMat());
+  mast.position.set(0.4, 4.6, 0); group.add(mast);
+  // Antenna spokes
+  for (let i = 0; i < 3; i++) {
+    const wGeo = new THREE.BoxGeometry(0.7, 0.04, 0.04);
+    const w = new THREE.LineSegments(new THREE.EdgesGeometry(wGeo), nextMat());
+    w.position.set(0.4, 4.6 + i * 0.5, 0); group.add(w);
+  }
+  // Rails along deck
+  for (let side = -1; side <= 1; side += 2) {
+    const railGeo = new THREE.BoxGeometry(7, 0.04, 0.04);
+    const rail = new THREE.LineSegments(new THREE.EdgesGeometry(railGeo), nextMat());
+    rail.position.set(0, 1.7, side * 0.85); group.add(rail);
+  }
+
+  // Hull text plane: "RESEARCH VESSEL ODYSSEY"
+  const tex = makeTextTexture("RESEARCH VESSEL\nODYSSEY", 1024, 256, "#88EEFF", true);
+  const textMat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+  const textPlane = new THREE.Mesh(new THREE.PlaneGeometry(4.5, 1.1), textMat);
+  textPlane.position.set(0.4, 0.85, 0.92); group.add(textPlane);
+  const textPlaneB = new THREE.Mesh(new THREE.PlaneGeometry(4.5, 1.1), textMat.clone());
+  textPlaneB.position.set(0.4, 0.85, -0.92); textPlaneB.rotation.y = Math.PI; group.add(textPlaneB);
+
+  // Floating "DATA BULKHEAD" label near a damaged section — set up by caller
+  return group;
+}
+
+function buildBioLights(worldW: number, worldH: number): THREE.Group {
+  const grp = new THREE.Group();
+  const count = Math.max(8, Math.floor(worldW * worldH / 250000));
+  for (let i = 0; i < count; i++) {
+    const x = (60 + Math.random() * (worldW - 120)) * WS;
+    const z = (60 + Math.random() * (worldH - 120)) * WS;
+    const y = 1 + Math.random() * (WALL_H - 2);
+    const cyan = Math.random() > 0.5;
+    const color = cyan ? 0x00DDFF : 0x66AAFF;
+    const light = new THREE.PointLight(color, 0.55, 9);
+    light.position.set(x, y, z);
+    grp.add(light);
+    const orb = new THREE.Mesh(
+      new THREE.SphereGeometry(0.07, 6, 6),
+      new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false }),
+    );
+    orb.position.copy(light.position);
+    orb.userData.baseY = y; orb.userData.phase = Math.random() * Math.PI * 2;
+    grp.add(orb);
+  }
+  return grp;
+}
+
 function buildCockpit(camera: THREE.PerspectiveCamera): { sweep: THREE.Object3D } {
   const cockpit = new THREE.Group();
   const metal = new THREE.MeshLambertMaterial({ color: 0x15151E });
@@ -714,8 +856,8 @@ class EchoesGame {
 
     // Scene
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x000000);
-    this.scene.fog = new THREE.FogExp2(0x000000, 0.018);
+    this.scene.background = new THREE.Color(0x000510);
+    this.scene.fog = new THREE.FogExp2(0x000814, 0.013);
 
     // Camera
     this.camera = new THREE.PerspectiveCamera(75, GAME_W / GAME_H, 0.05, 500);
@@ -727,12 +869,13 @@ class EchoesGame {
     this.scene.add(this.sceneGroup);
 
     // Dim ambient (only affects solid cockpit)
-    this.scene.add(new THREE.AmbientLight(0x050508, 0.4));
+    this.scene.add(new THREE.AmbientLight(0x081020, 0.55));
+    this.scene.add(new THREE.HemisphereLight(0x113355, 0x000511, 0.35));
 
     // Effect composer with bloom
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    const bloom = new UnrealBloomPass(new THREE.Vector2(GAME_W, GAME_H), 1.6, 0.5, 0.08);
+    const bloom = new UnrealBloomPass(new THREE.Vector2(GAME_W, GAME_H), 2.1, 0.6, 0.04);
     this.composer.addPass(bloom);
 
     // Build cockpit (attached to camera)
@@ -832,25 +975,47 @@ class EchoesGame {
   }
 
   private build3DScene(def: LevelData) {
-    // Dispose previous scene content
-    while (this.sceneGroup.children.length > 0) {
-      const child = this.sceneGroup.children[0] as THREE.LineSegments | THREE.Points;
-      if ((child as any).geometry) (child as any).geometry.dispose();
-      this.sceneGroup.remove(child);
-    }
+    // Dispose previous scene content recursively (geometries + materials + textures)
+    this.sceneGroup.traverse((obj) => {
+      const g = (obj as THREE.Mesh | THREE.LineSegments | THREE.Points | THREE.Sprite).geometry as THREE.BufferGeometry | undefined;
+      if (g && typeof g.dispose === "function") g.dispose();
+      const matAny = (obj as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
+      if (matAny) {
+        const mats = Array.isArray(matAny) ? matAny : [matAny];
+        for (const m of mats) {
+          const tex = (m as THREE.MeshBasicMaterial).map;
+          if (tex && typeof tex.dispose === "function") tex.dispose();
+          if (typeof m.dispose === "function") m.dispose();
+        }
+      }
+    });
+    while (this.sceneGroup.children.length > 0) this.sceneGroup.remove(this.sceneGroup.children[0]);
+    // Also dispose any in-flight ping spheres / flare meshes that live on this.scene
+    for (const p3 of this.ping3Ds) { this.scene.remove(p3.sphere); p3.sphere.geometry.dispose(); p3.mat.dispose(); }
+    for (const fm of this.flareMeshes) { this.scene.remove(fm.mesh); }
     this.revealObjs = [];
     this.enemyObjs = [];
     this.podObjs = [];
     this.noiseObjMeshes = [];
     this.ping3Ds = [];
     this.flareMeshes = [];
-    if (this.particleSystem) { this.scene.remove(this.particleSystem); this.particleSystem = null; }
+    this.particleSystem = null; // (lived in sceneGroup; already removed above)
 
-    // Obstacle boxes
+    // Color palette for variety (rainbow wireframe vibe matching reference image)
+    const wallPalette = [0x00FFFF, 0x00DDFF, 0x44AAFF, 0x66FFCC, 0xFF55CC, 0x9966FF];
+
+    // Obstacle boxes — base alpha so always faintly visible (deep ocean glow)
+    let pi = 0;
     for (const rect of def.obstacles) {
-      const { lines, mat } = buildObstacleEdges(rect);
+      const c = wallPalette[pi++ % wallPalette.length];
+      const baseAlpha = 0.12;
+      const geo = new THREE.BoxGeometry(rect.w * WS, WALL_H, rect.h * WS);
+      const edges = new THREE.EdgesGeometry(geo);
+      const mat = wireMat(c, baseAlpha);
+      const lines = new THREE.LineSegments(edges, mat);
+      lines.position.set((rect.x + rect.w / 2) * WS, WALL_H / 2, (rect.y + rect.h / 2) * WS);
       this.sceneGroup.add(lines);
-      this.revealObjs.push({ lines, mat, cx: rect.x + rect.w / 2, cy: rect.y + rect.h / 2, alpha: 0 });
+      this.revealObjs.push({ lines, mat, cx: rect.x + rect.w / 2, cy: rect.y + rect.h / 2, alpha: baseAlpha, baseAlpha });
     }
 
     // Floor grid cells
@@ -862,18 +1027,19 @@ class EchoesGame {
         const cellW = Math.min(FLOOR_CELL, def.worldW - col * FLOOR_CELL);
         const cellH = Math.min(FLOOR_CELL, def.worldH - row * FLOOR_CELL);
         const { lines, mat } = buildFloorCell(cx, cy, cellW, cellH);
+        mat.opacity = 0.05;
         this.sceneGroup.add(lines);
-        this.revealObjs.push({ lines, mat, cx, cy, alpha: 0 });
-        // Ceiling cell (every other to save geometry count)
+        this.revealObjs.push({ lines, mat, cx, cy, alpha: 0.05, baseAlpha: 0.05 });
         if ((col + row) % 2 === 0) {
           const { lines: cl, mat: cm } = buildCeilCell(cx, cy, cellW * 2, cellH * 2);
+          cm.opacity = 0.04;
           this.sceneGroup.add(cl);
-          this.revealObjs.push({ lines: cl, mat: cm, cx, cy, alpha: 0 });
+          this.revealObjs.push({ lines: cl, mat: cm, cx, cy, alpha: 0.04, baseAlpha: 0.04 });
         }
       }
     }
 
-    // Stalactites / stalagmites (random, within world bounds)
+    // Stalactites / stalagmites
     const stalaCount = Math.floor(def.worldW * def.worldH / 40000);
     for (let i = 0; i < stalaCount; i++) {
       const x3d = (50 + Math.random() * (def.worldW - 100)) * WS;
@@ -881,47 +1047,74 @@ class EchoesGame {
       const h = 0.8 + Math.random() * 3;
       const onFloor = Math.random() > 0.5;
       const { lines, mat } = buildStalactite(x3d, z3d, onFloor, h);
+      mat.opacity = 0.09;
       this.sceneGroup.add(lines);
-      // stalactites use nearest reveal obj (just assign the closest cell)
       const cx2d = x3d / WS, cy2d = z3d / WS;
-      this.revealObjs.push({ lines, mat, cx: cx2d, cy: cy2d, alpha: 0 });
+      this.revealObjs.push({ lines, mat, cx: cx2d, cy: cy2d, alpha: 0.09, baseAlpha: 0.09 });
     }
 
-    // Enemies
+    // Bioluminescent point lights scattered throughout (always visible — deep ocean)
+    this.sceneGroup.add(buildBioLights(def.worldW, def.worldH));
+
+    // RESEARCH VESSEL ODYSSEY — featured wreck in level 1 (matches reference image)
+    if (def.id === 1) {
+      const ship = buildOdysseyShip();
+      ship.position.set(400 * WS, 0.05, 2620 * WS);
+      ship.rotation.y = -0.15;
+      this.sceneGroup.add(ship);
+      const bulkLabel = makeBillboard("DATA BULKHEAD", "#FFAA22", 4, 0.9);
+      bulkLabel.material.opacity = 0.85;
+      bulkLabel.position.set(400 * WS + 0.6, 1.4, 2620 * WS + 1.2);
+      this.sceneGroup.add(bulkLabel);
+      const bulkCube = new THREE.Mesh(
+        new THREE.BoxGeometry(0.3, 0.45, 0.2),
+        new THREE.MeshBasicMaterial({ color: 0xFFAA22, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending }),
+      );
+      bulkCube.position.set(400 * WS + 0.6, 0.9, 2620 * WS + 1.0);
+      this.sceneGroup.add(bulkCube);
+      const bulkLight = new THREE.PointLight(0xFF9911, 1.6, 6);
+      bulkLight.position.copy(bulkCube.position);
+      this.sceneGroup.add(bulkLight);
+    }
+
+    // Enemies — wrap with THREAT DETECTED label
     for (const enemy of this.enemies) {
-      let eobj: EnemyObj;
-      if (enemy.type === "drifter") {
-        eobj = buildDrifterGroup();
-      } else if (enemy.type === "stalker") {
-        eobj = buildStalkerGroup();
-      } else {
-        eobj = buildLeviathanGroup();
-      }
-      eobj.group.visible = false;
-      this.scene.add(eobj.group);
-      this.enemyObjs.push(eobj);
+      let built: { group: THREE.Group; mats: THREE.LineBasicMaterial[] };
+      if (enemy.type === "drifter") built = buildDrifterGroup();
+      else if (enemy.type === "stalker") built = buildStalkerGroup();
+      else built = buildLeviathanGroup();
+      const labelY = enemy.type === "leviathan" ? 6.5 : 3.4;
+      const label = makeBillboard("THREAT DETECTED", "#FF4444", enemy.type === "leviathan" ? 6.5 : 4.2, enemy.type === "leviathan" ? 1.4 : 1.0);
+      label.position.set(0, labelY, 0);
+      built.group.add(label);
+      built.group.visible = false;
+      this.sceneGroup.add(built.group);
+      this.enemyObjs.push({ group: built.group, mats: built.mats, label, labelMat: label.material as THREE.SpriteMaterial });
     }
 
-    // Lifepods
+    // Lifepods — labelled with character name
     for (const pod of this.pods) {
       const pobj = buildPodMesh();
       pobj.group.position.set(pod.x * WS, EYE_H * 0.6, pod.y * WS);
+      const label = makeBillboard(`${pod.character} — LIFEPOD`, "#22FFAA", 4.2, 0.95);
+      label.position.set(0, 2.2, 0);
+      pobj.group.add(label);
       pobj.group.visible = false;
-      this.scene.add(pobj.group);
-      this.podObjs.push(pobj);
+      this.sceneGroup.add(pobj.group);
+      this.podObjs.push({ ...pobj, label, labelMat: label.material as THREE.SpriteMaterial });
     }
 
     // Noise objects (L2)
     for (const nobj of this.noiseObjs) {
       const group = buildNoiseObjMesh();
       group.position.set(nobj.x * WS, 1.0, nobj.y * WS);
-      this.scene.add(group);
+      this.sceneGroup.add(group);
       this.noiseObjMeshes.push({ group, mat: group.userData.mat as THREE.LineBasicMaterial });
     }
 
     // Bioluminescent particles
     this.particleSystem = buildParticles(def.worldW, def.worldH);
-    this.scene.add(this.particleSystem);
+    this.sceneGroup.add(this.particleSystem);
   }
 
   // ============================================================
@@ -948,11 +1141,21 @@ class EchoesGame {
     this.flareObjs.push({ x: this.px, y: this.py, vy: 18, timer: FLARE_DURATION, pingTimer: 0 });
     this.noise = Math.min(100, this.noise + 5);
     this.audio.flare();
-    // 3D flare
+    // 3D flare with FLARE label and orbital ring
     const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 8), new THREE.MeshBasicMaterial({ color: 0xFF6600, blending: THREE.AdditiveBlending }));
     const light = new THREE.PointLight(0xFF6600, 2.5, 40 * WS * 80);
     light.position.set(0, 0, 0);
     mesh.add(light);
+    // Orbital ring (visual cue like the reference image)
+    const ringGeo = new THREE.TorusGeometry(0.55, 0.025, 6, 24);
+    const ring = new THREE.Mesh(ringGeo, new THREE.MeshBasicMaterial({ color: 0xFFAA33, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending }));
+    ring.rotation.x = Math.PI / 2;
+    mesh.add(ring);
+    // FLARE billboard label
+    const label = makeBillboard("FLARE", "#FFAA33", 1.6, 0.5);
+    label.material.opacity = 0.9;
+    label.position.set(0, 1.1, 0);
+    mesh.add(label);
     mesh.position.set(this.px * WS, EYE_H, this.py * WS);
     this.scene.add(mesh);
     this.flareMeshes.push({ mesh, light });
@@ -1041,7 +1244,10 @@ class EchoesGame {
     }
   }
 
-  private showSub(text: string, ms = 5500) { this.subtitle = text; this.subTimer = ms; }
+  private showSub(text: string, ms = 5500) {
+    this.subtitle = text; this.subTimer = ms;
+    if (this.audioReady) this.audio.speak(text);
+  }
 
   // ============================================================
   // UPDATE
@@ -1085,14 +1291,12 @@ class EchoesGame {
     const boosting = this.keys["ShiftLeft"] || this.keys["ShiftRight"];
     const spd = PLAYER_SPEED * (boosting ? PLAYER_BOOST_MULT : 1);
 
-    // Camera-relative movement
-    const fwdX = Math.sin(this.yaw), fwdY = -Math.cos(this.yaw);
-    const rightX = Math.cos(this.yaw), rightY = Math.sin(this.yaw);
+    // Absolute world-aligned movement (W=up on map, S=down, A=left, D=right)
     let ax = 0, ay = 0;
-    if (this.keys["KeyW"] || this.keys["ArrowUp"]) { ax += fwdX * spd; ay += fwdY * spd; }
-    if (this.keys["KeyS"] || this.keys["ArrowDown"]) { ax -= fwdX * spd; ay -= fwdY * spd; }
-    if (this.keys["KeyA"] || this.keys["ArrowLeft"]) { ax -= rightX * spd; ay -= rightY * spd; }
-    if (this.keys["KeyD"] || this.keys["ArrowRight"]) { ax += rightX * spd; ay += rightY * spd; }
+    if (this.keys["KeyW"] || this.keys["ArrowUp"]) ay -= spd;
+    if (this.keys["KeyS"] || this.keys["ArrowDown"]) ay += spd;
+    if (this.keys["KeyA"] || this.keys["ArrowLeft"]) ax -= spd;
+    if (this.keys["KeyD"] || this.keys["ArrowRight"]) ax += spd;
 
     this.pvx += ax * dtS; this.pvy += ay * dtS;
     this.pvx *= PLAYER_FRICTION; this.pvy *= PLAYER_FRICTION;
@@ -1158,6 +1362,8 @@ class EchoesGame {
           eobj.group.position.set(e.x * WS, EYE_H * 0.5, e.y * WS);
           eobj.group.rotation.y += 0.012;
           for (const mat of eobj.mats) mat.opacity = a * (0.7 + Math.random() * 0.3);
+          // THREAT DETECTED label pulses
+          eobj.labelMat.opacity = a * (0.65 + Math.sin(Date.now() / 180) * 0.35);
         }
       }
     }
@@ -1292,10 +1498,10 @@ class EchoesGame {
   }
 
   private updateRevealFade(dt: number) {
-    const fadeRate = 0.38 * (dt / 1000);
+    const fadeRate = 0.55 * (dt / 1000);
     for (const ro of this.revealObjs) {
-      if (ro.alpha > 0) {
-        ro.alpha = Math.max(0, ro.alpha - fadeRate);
+      if (ro.alpha > ro.baseAlpha) {
+        ro.alpha = Math.max(ro.baseAlpha, ro.alpha - fadeRate);
         ro.mat.opacity = ro.alpha;
       }
     }
@@ -1309,6 +1515,7 @@ class EchoesGame {
           const a = Math.min(1, pod.revealTimer / 900);
           pobj.mat.opacity = a * (0.7 + Math.sin(Date.now() / 350) * 0.3);
           pobj.light.intensity = a * 1.2 * (0.7 + Math.sin(Date.now() / 280) * 0.3);
+          pobj.labelMat.opacity = a * 0.9;
           if (pod.rescued) { pobj.group.visible = false; }
         }
       } else if (!pod.rescued) {
@@ -1656,9 +1863,9 @@ class EchoesGame {
       ctx.fillText("[ PRESS SPACE OR CLICK TO BEGIN ]", GAME_W/2, GAME_H/2+68);
     }
     ctx.fillStyle = "rgba(255,255,255,0.28)"; ctx.font = "11px monospace";
-    const ctrls = ["WASD — MOVE (camera-relative)    SHIFT — BOOST",
+    const ctrls = ["WASD — MOVE (W=up, S=down, A=left, D=right)    SHIFT — BOOST",
       "CLICK — sonar ping    HOLD 1s — large ping    F — flare",
-      "E — interact / dock    MOUSE — look around",];
+      "E — interact / dock    MOUSE — look around (voice acting on)",];
     ctrls.forEach((c,i) => ctx.fillText(c, GAME_W/2, GAME_H/2+118+i*19));
   }
 
