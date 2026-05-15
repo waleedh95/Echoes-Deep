@@ -1,0 +1,40 @@
+Task 1: The Immersive Analog Dashboard (UI/UX)
+Keep the existing first-person submarine view exactly as it is (pitch black/wireframe ocean), but add a physical analog control panel as a Canvas overlay at the bottom of the screen. It should look like the bottom edge of a real submarine cockpit — the player is looking through the viewport above it, and the panel sits naturally below their line of sight.
+Please provide the setup guide and UI scripts to achieve this:
+
+Layout & Perspective: The panel must only take up the bottom 20-25% of the screen. Everything above it remains completely visible. The panel should have a slight 3D angle (using Canvas rotation or a 3D UI setup) like you're looking slightly down at a dashboard.
+
+Aesthetic: No digital elements. The panel surface must look like worn, aged aluminum — dirty, imperfect, and real.
+
+Analog Instruments: Include rows of circular analog gauges with brass rings and scratched glass. These gauges must show: Oxygen, Depth, Sonar Charge, Hull Integrity, and Flares.
+
+Interactivity (C#): Write a script (DashboardManager.cs) that rotates the real moving needles on these gauges based on gameplay variables. Include small physical valves and switches between the gauges that visually snap when the player presses the Sonar Ping or Flare buttons.
+
+Task 2: Realistic Submarine Physics (C# Scripting)
+I need a complete SubmarineController.cs script using Unity's Rigidbody system. The movement must not be instantaneous or rigid. It needs to simulate fluid dynamics, weight, and inertia.
+Please implement the following:
+
+Smooth Acceleration/Deceleration: Use Rigidbody.AddForce and AddTorque rather than modifying the transform directly. The sub should take a moment to reach top speed and drift slightly before coming to a complete stop (water inertia).
+
+Dynamic Drag & Buoyancy: Implement custom drag that increases as the sub moves faster. Add a subtle buoyancy mechanic so the sub naturally wants to drift or bob very slowly if no inputs are pressed.
+
+Pitch & Roll on Movement: When turning left/right, the sub should slightly lean (roll) into the turn. When ascending/descending, the nose should pitch up/down smoothly. Use Mathf.SmoothDamp or Quaternion.Slerp so this rotation is fluid and never snaps.
+
+Input Smoothing: Ensure the WASD/Joystick inputs are smoothed out so jerky player inputs translate to heavy, deliberate mechanical movements.
+
+Task 3: Oppressive Horror Atmosphere (Lighting & Post-Processing)
+Provide a step-by-step guide on configuring Unity's Post-Processing Volume and Lighting settings (URP/HDRP) to achieve a claustrophobic, thriller aesthetic.
+I need exact parameter recommendations for:
+
+Fog: How to set up volumetric fog or Exponential Squared fog to make the water look thick, murky, and pitch-black just a few meters away.
+
+Lighting: The sub's primary headlight should be a Spotlight with a "Cookie" (light texture) so the light looks uneven and distorted by water. It should have a sharp falloff.
+
+Post-Processing: Recommend settings for Vignette (to restrict peripheral vision and induce claustrophobia), Film Grain (to mimic a cheap, glitching retro camera feed), Chromatic Aberration (for distortion at the edges), and Color Grading (crushing the blacks, highlighting sickly greens and cold blues).
+
+Task 4: Atmospheric VFX and Audio Triggers
+To sell the realism, I need instructions or scripts for:
+
+Marine Snow (VFX): A particle system setup for small white/grey dust that floats in the water and reacts to the submarine's velocity (rushing past the camera when moving forward).
+
+Pressure Audio (C#): A modular script (HullStressAudio.cs) that plays random "metal groaning" or "hull creaking" audio clips based on the depth of the submarine, or when the player makes sudden, sharp turns (stressing the hull).

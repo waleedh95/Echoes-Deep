@@ -1,3 +1,4 @@
 artifacts/echoes-of-the-deep/public/leviathan.glb filter=lfs diff=lfs merge=lfs -text
 attached_assets/leviathan_-_ff7_remake_1778835908322.glb filter=lfs diff=lfs merge=lfs -text
 attached_assets/leviathan_-_ff7_remake_1778842395290.glb filter=lfs diff=lfs merge=lfs -text
+Echoes-Deep/attached_assets/leviathan_-_ff7_remake_1778843272314.glb filter=lfs diff=lfs merge=lfs -text
