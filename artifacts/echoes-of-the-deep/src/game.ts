@@ -3178,11 +3178,15 @@ class EchoesGame {
   // ============================================================
   private emitSonar(type: "small" | "large") {
     if (this.levBlocked) { this.showSub("[ LEVIATHAN PULSE — SONAR DISRUPTED ]"); return; }
+    if (this.sonarCharge < 100) {
+      this.showSub(`[ SONAR RECHARGING — ${Math.round(this.sonarCharge)}% ]`);
+      return;
+    }
     const maxR = type === "small" ? SONAR_SMALL_R : SONAR_LARGE_R;
     const speed = type === "small" ? 240 : 520; // large ping sweeps whole map in ~7 s
     this.noise = Math.min(100, this.noise + (type === "small" ? SONAR_SMALL_NOISE : SONAR_LARGE_NOISE));
     this.audio.sonar(type);
-    this.sonarCharge = Math.max(0, this.sonarCharge - (type === "small" ? 25 : 50));
+    this.sonarCharge = 0; // drain fully — must wait for complete recharge before next ping
     this.sonarSwitchAnim = 200;
     this.valveSonarAngle += Math.PI * (type === "small" ? 0.6 : 1.2);
     this._spawnPing(this.px, this.py, maxR, speed, 0x00CCFF, type);
@@ -4890,15 +4894,81 @@ class EchoesGame {
       // BR
       ctx.beginPath(); ctx.moveTo(bRight, bBot-ARM); ctx.lineTo(bRight, bBot); ctx.lineTo(bRight-ARM, bBot); ctx.stroke();
 
-      // Sonar-charge arc at TL corner
+      // ── Sonar charge ring (track + progress arc around the radar bezel) ──
       const sCF = Math.max(0, Math.min(1, this.gaugeDisplay.sonarCharge / 100));
-      ctx.strokeStyle = sCF > 0.8 ? 'rgba(0,255,78,0.72)' : 'rgba(0,145,58,0.50)';
-      ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(bLeft, bTop, 10, 0, sCF * Math.PI*2); ctx.stroke();
+      const sonarFull = sCF >= 0.99;
+      const CRING_R = RR + 7;
+      // Dim track ring
+      ctx.strokeStyle = 'rgba(0,50,20,0.50)';
+      ctx.lineWidth = 3.5;
+      ctx.beginPath(); ctx.arc(RCX, RCY, CRING_R, 0, Math.PI * 2); ctx.stroke();
+      // Charge progress arc (starts from 12-o'clock, clockwise)
+      const cStart = -Math.PI / 2;
+      const cEnd   = cStart + sCF * Math.PI * 2;
+      const sonarGreen = sonarFull
+        ? Math.round(255)
+        : Math.round(140 + sCF * 115);
+      ctx.strokeStyle = sonarFull
+        ? `rgba(0,255,78,${(0.78 + 0.20 * Math.sin(now * Math.PI * 4)).toFixed(2)})`
+        : `rgba(0,${sonarGreen},55,0.80)`;
+      ctx.lineWidth = 3.5;
+      if (sonarFull) { ctx.shadowColor = '#00ff50'; ctx.shadowBlur = 14 + 5 * Math.abs(Math.sin(now * Math.PI * 4)); }
+      ctx.beginPath(); ctx.arc(RCX, RCY, CRING_R, cStart, cEnd); ctx.stroke();
+      ctx.shadowBlur = 0;
+      // Bright end-cap dot on the charge arc tip
+      if (sCF > 0.02 && !sonarFull) {
+        const capX = RCX + Math.cos(cEnd) * CRING_R;
+        const capY = RCY + Math.sin(cEnd) * CRING_R;
+        ctx.fillStyle = 'rgba(0,230,80,0.92)';
+        ctx.shadowColor = '#00e050'; ctx.shadowBlur = 8;
+        ctx.beginPath(); ctx.arc(capX, capY, 2.5, 0, Math.PI * 2); ctx.fill();
+        ctx.shadowBlur = 0;
+      }
 
-      // SONAR label
-      ctx.fillStyle = 'rgba(0,195,68,0.52)'; ctx.font = '7px monospace'; ctx.textAlign = 'center';
-      ctx.fillText('SONAR', RCX, bBot + 12);
+      // ── SONAR label + charge % (inside bracket, near bottom of circle) ──
+      const pct = Math.round(sCF * 100);
+      ctx.font = 'bold 7px monospace'; ctx.textAlign = 'center';
+      ctx.fillStyle = sonarFull ? 'rgba(0,255,78,0.95)' : 'rgba(0,195,68,0.68)';
+      if (sonarFull) { ctx.shadowColor = '#00ff50'; ctx.shadowBlur = 7; }
+      ctx.fillText(`SONAR  ${pct}%`, RCX, bBot - 4);
+      ctx.shadowBlur = 0;
+
+      // ── Flare pip lights (3 pips near right bracket corner) ──────────────
+      const flares = Math.max(0, Math.min(3, this.flares));
+      const lowFlares = flares <= 1;
+      const PIP_R   = 4.5;
+      const PIP_X   = bRight + 10;
+      const PIP_Y0  = bTop  + 12;
+      const PIP_GAP = 18;
+      // "FLR" micro label above pips
+      ctx.font = '6px monospace'; ctx.textAlign = 'center';
+      ctx.fillStyle = lowFlares ? 'rgba(255,120,30,0.72)' : 'rgba(0,195,68,0.55)';
+      ctx.fillText('FLR', PIP_X, PIP_Y0 - 8);
+      for (let p = 0; p < 3; p++) {
+        const py  = PIP_Y0 + p * PIP_GAP;
+        const lit = p < flares;
+        if (lit) {
+          const pipCol = lowFlares
+            ? `rgba(255,${p === 0 ? 40 : 100},20,0.95)`
+            : 'rgba(0,235,80,0.92)';
+          const glowCol = lowFlares ? '#ff4414' : '#00eb50';
+          ctx.fillStyle   = pipCol;
+          ctx.shadowColor = glowCol;
+          ctx.shadowBlur  = lowFlares ? 10 + 4 * Math.abs(Math.sin(now * Math.PI * 3)) : 7;
+          ctx.beginPath(); ctx.arc(PIP_X, py, PIP_R, 0, Math.PI * 2); ctx.fill();
+          ctx.shadowBlur = 0;
+          // Pip specular highlight
+          ctx.fillStyle = 'rgba(255,255,255,0.25)';
+          ctx.beginPath(); ctx.arc(PIP_X - 1.2, py - 1.5, 1.8, 0, Math.PI * 2); ctx.fill();
+        } else {
+          // Unlit pip: dark recess
+          ctx.fillStyle   = 'rgba(0,18,8,0.85)';
+          ctx.strokeStyle = 'rgba(0,60,25,0.50)';
+          ctx.lineWidth   = 1;
+          ctx.beginPath(); ctx.arc(PIP_X, py, PIP_R, 0, Math.PI * 2);
+          ctx.fill(); ctx.stroke();
+        }
+      }
     }
 
     // ══════════════════════════════════════════════════════════════════════════
@@ -4910,7 +4980,8 @@ class EchoesGame {
       interface BtnDef2 { label: string; glow: boolean; value?: number }
       const BTNS2: BtnDef2[] = [
         { label: 'FLARE',   glow: this.flareSwitchAnim > 0, value: this.gaugeDisplay.flares / 3 },
-        { label: 'PING',    glow: this.sonarSwitchAnim > 0                                        },
+        { label: this.sonarCharge < 100 ? `${Math.round(this.sonarCharge)}%` : 'PING',
+                            glow: this.sonarSwitchAnim > 0, value: this.sonarCharge < 100 ? this.sonarCharge / 100 : undefined },
         { label: 'BALLAST', glow: false                                                            },
         { label: 'TRIM',    glow: false                                                            },
         { label: 'VENT',    glow: false                                                            },
