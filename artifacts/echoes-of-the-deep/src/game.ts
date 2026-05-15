@@ -504,6 +504,56 @@ class AudioSys {
     whooshSrc.onended = () => { try { whooshSrc.disconnect(); whooshFlt.disconnect(); whooshG.disconnect(); } catch { /* gone */ } };
   }
 
+  // Metallic impact sound — sharp transient clang, low-pass filtered for underwater quality
+  impact(severity: "graze" | "direct") {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx;
+    const t0 = ctx.currentTime;
+    const hard = severity === "direct";
+
+    // Sharp transient click — the moment of impact
+    const clickLen = Math.ceil(ctx.sampleRate * 0.05);
+    const clickBuf = ctx.createBuffer(1, clickLen, ctx.sampleRate);
+    const cd = clickBuf.getChannelData(0);
+    for (let i = 0; i < cd.length; i++) {
+      cd[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.007));
+    }
+    const clickSrc = ctx.createBufferSource(); clickSrc.buffer = clickBuf;
+    const clickHp = ctx.createBiquadFilter(); clickHp.type = "highpass"; clickHp.frequency.value = 500;
+    const clickG = ctx.createGain(); clickG.gain.value = hard ? 0.55 : 0.30;
+    clickSrc.connect(clickHp); clickHp.connect(clickG); clickG.connect(this.master);
+    clickSrc.start(t0);
+    clickSrc.onended = () => { try { clickSrc.disconnect(); clickHp.disconnect(); clickG.disconnect(); } catch { /* gone */ } };
+
+    // Sub-bass body — low-pass noise burst (hull mass resonance)
+    const thudLen = Math.ceil(ctx.sampleRate * (hard ? 0.32 : 0.18));
+    const thudBuf = ctx.createBuffer(1, thudLen, ctx.sampleRate);
+    const td = thudBuf.getChannelData(0);
+    for (let i = 0; i < td.length; i++) td[i] = Math.random() * 2 - 1;
+    const thudSrc = ctx.createBufferSource(); thudSrc.buffer = thudBuf;
+    const thudLp = ctx.createBiquadFilter(); thudLp.type = "lowpass"; thudLp.frequency.value = hard ? 260 : 180;
+    const thudG = ctx.createGain();
+    thudG.gain.setValueAtTime(hard ? 0.65 : 0.32, t0);
+    thudG.gain.exponentialRampToValueAtTime(0.001, t0 + (hard ? 0.32 : 0.18));
+    thudSrc.connect(thudLp); thudLp.connect(thudG); thudG.connect(this.master);
+    thudSrc.start(t0);
+    thudSrc.onended = () => { try { thudSrc.disconnect(); thudLp.disconnect(); thudG.disconnect(); } catch { /* gone */ } };
+
+    // Metallic ring — bandpass-filtered oscillator with quick decay
+    const ringOsc = ctx.createOscillator();
+    ringOsc.type = "triangle";
+    const ringFreq = hard ? 155 : 210;
+    ringOsc.frequency.value = ringFreq;
+    const ringBp = ctx.createBiquadFilter(); ringBp.type = "bandpass"; ringBp.frequency.value = ringFreq; ringBp.Q.value = 7;
+    const ringG = ctx.createGain();
+    const ringDur = hard ? 0.48 : 0.26;
+    ringG.gain.setValueAtTime(hard ? 0.28 : 0.14, t0 + 0.01);
+    ringG.gain.exponentialRampToValueAtTime(0.001, t0 + ringDur);
+    ringOsc.connect(ringBp); ringBp.connect(ringG); ringG.connect(this.master);
+    ringOsc.start(t0); ringOsc.stop(t0 + ringDur);
+    ringOsc.onended = () => { try { ringOsc.disconnect(); ringBp.disconnect(); ringG.disconnect(); } catch { /* gone */ } };
+  }
+
   // Hull danger sting — sharp alarm cluster triggered once when hull enters red zone
   hullDangerSting() {
     if (!this.ctx || !this.master) return;
@@ -1963,6 +2013,13 @@ class EchoesGame {
   private hullBezelFlash = 0;    // ms countdown — orange/red glow on hull hit
   private o2BezelPhase = 0;      // accumulated radians for O2 critical sine pulse
 
+  // Hull collision damage state
+  private hullDamageCooldown = 0;   // ms — min gap between damage ticks (spam prevention)
+  private shakeTimer = 0;           // ms remaining for camera shake
+  private shakeIntensity = 0;       // peak shake magnitude (Three.js units)
+  private shakeDuration = 160;      // ms — total duration of current shake event (for decay calc)
+  private gameOverReason: "oxygen" | "hull" = "oxygen";
+
   // Level transition
   private transitionTargetLvl = 0;
   private transitionStartMs = 0;
@@ -2164,6 +2221,8 @@ class EchoesGame {
     this.pings = []; this.flareObjs = [];
     this.puzzleDone = false; this.sacrificing = false; this.transitioning = false;
     this.hullIntegrity = 100; this.hullInDanger = false; this.sonarCharge = 100;
+    this.hullDamageCooldown = 0; this.shakeTimer = 0; this.shakeIntensity = 0; this.shakeDuration = 160;
+    this.gameOverReason = "oxygen";
     this.sonarSwitchAnim = 0; this.flareSwitchAnim = 0;
     this.valveSonarAngle = 0; this.valveFlareAngle = 0;
     const depthBase = [20, 55, 82][idx] ?? 20;
@@ -2609,6 +2668,37 @@ class EchoesGame {
     const [rx, ry] = this.collide(nx, ny, PLAYER_SIZE, def.obstacles);
     this.px = Math.max(PLAYER_SIZE + 2, Math.min(def.worldW - PLAYER_SIZE - 2, rx));
     this.py = Math.max(PLAYER_SIZE + 2, Math.min(def.worldH - PLAYER_SIZE - 2, ry));
+
+    // ── Hull collision damage ──
+    if (this.hullDamageCooldown > 0) this.hullDamageCooldown -= dt;
+
+    // Correction vector: how far we were pushed out of the obstacle/wall
+    const corrX = this.px - nx;
+    const corrY = this.py - ny;
+    const corrDist = Math.hypot(corrX, corrY);
+
+    if (corrDist > 0.4 && this.hullDamageCooldown <= 0 && !this.transitioning) {
+      // Project velocity onto outward collision normal to get approach speed
+      const normX = corrX / corrDist, normY = corrY / corrDist;
+      const approachVel = -(this.pvx * normX + this.pvy * normY);
+      const isDirect = approachVel > 90; // px/s — head-on threshold
+
+      const damage = isDirect ? 18 + Math.random() * 7 : 5 + Math.random() * 3;
+      this.hullIntegrity = Math.max(0, this.hullIntegrity - damage);
+      this.hullDamageCooldown = 600;
+
+      // Spring kick on hull needle — overshoot effect
+      this.gaugeVelocity.hull -= isDirect ? 65 : 28;
+      this.hullBezelFlash = isDirect ? 620 : 340;
+
+      // Camera shake — intensity and duration scale with severity
+      this.shakeTimer = isDirect ? 320 : 160;
+      this.shakeDuration = isDirect ? 320 : 160;
+      this.shakeIntensity = isDirect ? 0.07 : 0.028;
+
+      // Metallic impact sound
+      if (this.audioReady) this.audio.impact(isDirect ? "direct" : "graze");
+    }
   }
 
   private updateCameraPhysics(dt: number) {
@@ -2965,10 +3055,19 @@ class EchoesGame {
     const dtS = dt / 1000;
     // Sonar charge regenerates over time
     this.sonarCharge = Math.min(100, this.sonarCharge + 14 * dtS);
-    // Hull integrity slowly regenerates when not in a hit window
-    if (this.invTimer <= 0) this.hullIntegrity = Math.min(100, this.hullIntegrity + 1.8 * dtS);
+    // Hull failure — trigger game over when integrity reaches zero (same path as O2 depletion)
+    if (this.hullIntegrity <= 0 && !this.transitioning) {
+      this.gameOverReason = "hull";
+      this.shakeTimer = 2200;
+      this.shakeDuration = 2200;
+      this.shakeIntensity = 0.06;
+      this.subtitle = '[ HULL FAILURE — CRITICAL BREACH ]';
+      this.subTimer = 2400;
+      this.transitioning = true;
+      setTimeout(() => { this.state = "GAME_OVER"; }, 2200);
+    }
     // Hull danger sting — fire once when crossing into the red zone, reset when recovering above 35
-    if (this.hullIntegrity < 25 && !this.hullInDanger) {
+    if (this.hullIntegrity < 25 && this.hullIntegrity > 0 && !this.hullInDanger) {
       this.hullInDanger = true;
       this.audio.hullDangerSting();
     } else if (this.hullIntegrity >= 35 && this.hullInDanger) {
@@ -3459,6 +3558,17 @@ class EchoesGame {
     this.camera.rotation.y = this.yaw;
     this.camera.rotation.x = this.pitch + this.cameraPitchOff;
     this.camera.rotation.z = this.cameraRoll;
+
+    // Camera shake — apply decaying random positional offsets on collision
+    if (this.shakeTimer > 0) {
+      const dtRender = 16; // approx 1 frame ms (render runs in RAF)
+      this.shakeTimer = Math.max(0, this.shakeTimer - dtRender);
+      const decay = this.shakeTimer / Math.max(1, this.shakeDuration);
+      const s = this.shakeIntensity * Math.sqrt(decay);
+      this.camera.position.x += (Math.random() - 0.5) * s * 2;
+      this.camera.position.y += (Math.random() - 0.5) * s;
+      this.camera.position.z += (Math.random() - 0.5) * s * 0.8;
+    }
 
     // Rotate radar sweep
     if (this.cockpitSweep) this.cockpitSweep.rotation.z += 0.025;
@@ -3992,12 +4102,12 @@ class EchoesGame {
     // Main title — red glow
     ctx.shadowColor = '#FF2200'; ctx.shadowBlur = 30;
     ctx.fillStyle = '#FF3322'; ctx.font = 'bold 44px monospace';
-    ctx.fillText('OXYGEN DEPLETED', GAME_W/2, CY + 82);
+    ctx.fillText(this.gameOverReason === "hull" ? 'HULL FAILURE' : 'OXYGEN DEPLETED', GAME_W/2, CY + 82);
     ctx.shadowBlur = 0;
 
     // Quote
     ctx.fillStyle = 'rgba(100,180,220,0.55)'; ctx.font = 'italic 15px monospace';
-    ctx.fillText('"I\'m sorry..."', GAME_W/2, CY + 116);
+    ctx.fillText(this.gameOverReason === "hull" ? '"The hull cannot take any more..."' : '"I\'m sorry..."', GAME_W/2, CY + 116);
 
     // Thin separator
     ctx.strokeStyle = 'rgba(80,60,40,0.35)'; ctx.lineWidth = 1;
