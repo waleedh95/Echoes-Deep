@@ -4408,150 +4408,509 @@ class EchoesGame {
     ctx.fillText(label, cx, cy + r + 14);
   }
 
-  private renderAnalogDashboard() {
-    const ctx = this.hudCtx;
-    const PANEL_Y = Math.floor(GAME_H * 0.75);  // 540 — 25% of screen
-    const PANEL_H = GAME_H - PANEL_Y;            // 180px
+  // ============================================================
+  // SUBMARINE CONTROL PANEL (replaces analog dashboard)
+  // ============================================================
+  private renderControlPanel() {
+    const ctx  = this.hudCtx;
+    const PY   = Math.floor(GAME_H * 0.80); // panel top Y = 576
+    const PH   = GAME_H - PY;               // panel height = 144
+    const PCY  = PY + PH / 2;               // panel centre Y = 648
+    const now  = performance.now() / 1000;
 
-    // ── 3D perspective tilt: trapezoid clip simulates looking slightly downward ──
-    // Top edge is narrower (farther from viewer), bottom is full-width (closer)
-    ctx.save();
-    const TAPER = 14;
-    ctx.beginPath();
-    ctx.moveTo(TAPER, PANEL_Y); ctx.lineTo(GAME_W - TAPER, PANEL_Y);
-    ctx.lineTo(GAME_W, GAME_H); ctx.lineTo(0, GAME_H);
-    ctx.closePath(); ctx.clip();
-    // Subtle x-skew to reinforce depth (y unchanged, so circles stay round)
-    ctx.transform(1, 0, 0.015, 1, -PANEL_Y * 0.015, 0);
+    // ── Panel base: dark near-black gunmetal ─────────────────────────────────
+    const baseGrad = ctx.createLinearGradient(0, PY, 0, GAME_H);
+    baseGrad.addColorStop(0,    '#1e252a');
+    baseGrad.addColorStop(0.35, '#161c20');
+    baseGrad.addColorStop(0.75, '#10151a');
+    baseGrad.addColorStop(1,    '#090c0e');
+    ctx.fillStyle = baseGrad;
+    ctx.fillRect(0, PY, GAME_W, PH);
 
-    // ── Panel base: aged gunmetal aluminum ──
-    const baseGrad = ctx.createLinearGradient(0, PANEL_Y, 0, GAME_H);
-    baseGrad.addColorStop(0,   '#22292c');
-    baseGrad.addColorStop(0.28,'#1a2022');
-    baseGrad.addColorStop(0.68,'#14191a');
-    baseGrad.addColorStop(1,   '#0d1011');
-    ctx.fillStyle = baseGrad; ctx.fillRect(0, PANEL_Y, GAME_W, PANEL_H);
-
-    // Horizontal metal grain lines
-    for (let i = 0; i < 6; i++) {
-      const by = PANEL_Y + 14 + i * 28;
-      ctx.strokeStyle = `rgba(255,255,255,${0.010 + i * 0.003})`; ctx.lineWidth = 1;
-      ctx.beginPath(); ctx.moveTo(0, by); ctx.lineTo(GAME_W, by); ctx.stroke();
+    // ── Curved porthole-frame top edge ────────────────────────────────────────
+    {
+      const edgeGrad = ctx.createLinearGradient(0, PY - 10, 0, PY + 14);
+      edgeGrad.addColorStop(0,   'rgba(65,85,105,0.85)');
+      edgeGrad.addColorStop(0.5, 'rgba(38,52,65,0.70)');
+      edgeGrad.addColorStop(1,   'rgba(18,25,32,0)');
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(0, PY);
+      ctx.bezierCurveTo(GAME_W * 0.25, PY - 10, GAME_W * 0.75, PY - 10, GAME_W, PY);
+      ctx.lineTo(GAME_W, PY + 14);
+      ctx.bezierCurveTo(GAME_W * 0.75, PY + 4, GAME_W * 0.25, PY + 4, 0, PY + 14);
+      ctx.closePath();
+      ctx.fillStyle = edgeGrad;
+      ctx.fill();
+      ctx.restore();
+      // Hairline separator
+      ctx.strokeStyle = 'rgba(42,62,78,0.95)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.moveTo(0, PY);
+      ctx.bezierCurveTo(GAME_W * 0.25, PY - 9, GAME_W * 0.75, PY - 9, GAME_W, PY);
+      ctx.stroke();
     }
 
-    // Panel scratch marks
-    const scratchDefs: [number,number,number,number][] = [
-      [85,14,175,24],[315,18,425,10],[560,24,690,16],[790,10,910,20],[975,16,1090,8],[1190,12,1258,22],
+    // ── Metal grain lines ─────────────────────────────────────────────────────
+    for (let i = 0; i < 5; i++) {
+      ctx.strokeStyle = `rgba(255,255,255,${(0.007 + i * 0.002).toFixed(3)})`;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(0, PY + 16 + i * 26);
+      ctx.lineTo(GAME_W, PY + 16 + i * 26);
+      ctx.stroke();
+    }
+
+    // ── Panel scratches ───────────────────────────────────────────────────────
+    const scrDefs: [number,number,number,number][] = [
+      [88,10,178,20],[340,14,450,6],[725,18,845,10],[1055,12,1165,4],[1200,16,1265,24],
     ];
     ctx.lineWidth = 1;
-    for (const [x1,y1,x2,y2] of scratchDefs) {
-      ctx.strokeStyle = 'rgba(255,255,255,0.022)';
-      ctx.beginPath(); ctx.moveTo(x1, PANEL_Y+y1); ctx.lineTo(x2, PANEL_Y+y2); ctx.stroke();
+    for (const [x1,y1,x2,y2] of scrDefs) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.018)';
+      ctx.beginPath(); ctx.moveTo(x1, PY+y1); ctx.lineTo(x2, PY+y2); ctx.stroke();
     }
 
-    // Side vignettes (grime)
-    const vigL = ctx.createLinearGradient(0, PANEL_Y, 85, PANEL_Y);
-    vigL.addColorStop(0, 'rgba(0,0,0,0.58)'); vigL.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = vigL; ctx.fillRect(0, PANEL_Y, 85, PANEL_H);
-    const vigR = ctx.createLinearGradient(GAME_W-85, PANEL_Y, GAME_W, PANEL_Y);
-    vigR.addColorStop(0, 'rgba(0,0,0,0)'); vigR.addColorStop(1, 'rgba(0,0,0,0.58)');
-    ctx.fillStyle = vigR; ctx.fillRect(GAME_W-85, PANEL_Y, 85, PANEL_H);
-
-    // Top edge: worn highlight + separator
-    const edgeH = ctx.createLinearGradient(0, PANEL_Y, 0, PANEL_Y + 8);
-    edgeH.addColorStop(0, 'rgba(140,125,90,0.88)'); edgeH.addColorStop(1, 'rgba(50,45,30,0)');
-    ctx.fillStyle = edgeH; ctx.fillRect(0, PANEL_Y, GAME_W, 8);
-    ctx.strokeStyle = 'rgba(80,70,50,0.6)'; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(0, PANEL_Y + 8); ctx.lineTo(GAME_W, PANEL_Y + 8); ctx.stroke();
-
-    // ── Rivets along top edge ──
-    const rivetY = PANEL_Y + 5;
-    for (let rx = 28; rx < GAME_W - 20; rx += 52) {
-      const rg = ctx.createRadialGradient(rx-1, rivetY-1, 0, rx, rivetY, 5);
-      rg.addColorStop(0, 'rgba(200,180,130,0.9)'); rg.addColorStop(0.45, 'rgba(110,95,65,0.7)');
-      rg.addColorStop(1, 'rgba(30,25,15,0)');
-      ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(rx, rivetY, 4.5, 0, Math.PI*2); ctx.fill();
-      ctx.fillStyle = 'rgba(0,0,0,0.38)';
-      ctx.beginPath(); ctx.ellipse(rx, rivetY+3.5, 3.5, 1.5, 0, 0, Math.PI*2); ctx.fill();
+    // ── Rivets along top edge ─────────────────────────────────────────────────
+    const rivetY = PY + 7;
+    for (let rx = 22; rx < GAME_W - 18; rx += 46) {
+      const rg = ctx.createRadialGradient(rx-1, rivetY-1, 0, rx, rivetY, 4);
+      rg.addColorStop(0,   'rgba(148,128,98,0.85)');
+      rg.addColorStop(0.5, 'rgba(58,48,33,0.60)');
+      rg.addColorStop(1,   'rgba(0,0,0,0)');
+      ctx.fillStyle = rg;
+      ctx.beginPath(); ctx.arc(rx, rivetY, 3.5, 0, Math.PI*2); ctx.fill();
     }
 
-    // ── ROW 1: three large primary gauges ──
-    // OXYGEN (left) | [SONAR SWITCH] | DEPTH (center) | [FLARE SWITCH] | SONAR CHARGE (right)
-    const R1 = 32;           // radius
-    const R1_EXT = R1 + 7;  // from center to outer bezel edge = 39
-    const ROW1_CY = PANEL_Y + 9 + R1_EXT;  // 540 + 9 + 39 = 588
+    // ── Section dividers ──────────────────────────────────────────────────────
+    for (const dx of [420, 860]) {
+      ctx.strokeStyle = 'rgba(32,48,58,0.85)';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(dx, PY+10); ctx.lineTo(dx, GAME_H-8); ctx.stroke();
+    }
 
-    const gO2Color   = this.o2 > 50            ? '#00FF88' : this.o2 > 20            ? '#FFD700' : '#FF4422';
-    const o2PulseA   = this.o2 < 20 ? (0.45 + 0.45 * Math.sin(this.o2BezelPhase)) : 0;
-    this.drawGauge(ctx,  180, ROW1_CY, R1, this.gaugeDisplay.o2 / 100,          'OXYGEN', gO2Color,  0, '#FF2200', o2PulseA, false);
-    this.drawGauge(ctx,  640, ROW1_CY, R1, this.gaugeDisplay.depth / 100,        'DEPTH',  '#00CCFF', 1);
-    this.drawGauge(ctx, 1100, ROW1_CY, R1, this.gaugeDisplay.sonarCharge / 100,  'SONAR',  '#22EEBB', 2);
+    // ══════════════════════════════════════════════════════════════════════════
+    // LEFT CLUSTER — RED CONTROLS  (x: 0 .. 420)
+    // ══════════════════════════════════════════════════════════════════════════
 
-    // Toggle switches sit between the row-1 gauges (at row-1 height)
-    this.drawSwitch(ctx, 415, ROW1_CY, 'SONAR', this.sonarSwitchAnim > 0);
-    this.drawSwitch(ctx, 865, ROW1_CY, 'FLARE', this.flareSwitchAnim > 0);
-
-    // ── ROW 2: two smaller gauges + two rotary valve handles + NOISE arc ──
-    // HULL (left) | BALLAST VALVE | [NOISE ARC] | VENT VALVE | FLARES (right)
-    const R2 = 24;           // radius
-    const R2_EXT = R2 + 6;  // 30
-    const ROW2_CY = ROW1_CY + R1_EXT + 9 + R2_EXT;  // 588 + 39 + 9 + 30 = 666
-
-    const gHullColor   = this.hullIntegrity > 50 ? '#00FF88' : this.hullIntegrity > 25 ? '#FFD700' : '#FF4422';
-    const hullFlashA   = this.hullBezelFlash > 0 ? (this.hullBezelFlash / 480) * 0.85 : 0;
-    const hullCracked  = this.hullIntegrity < 25;
-    this.drawGauge(ctx,  300, ROW2_CY, R2, this.gaugeDisplay.hull / 100,  'HULL',   gHullColor, 3, '#FF5500', hullFlashA, hullCracked);
-    this.drawGauge(ctx,  980, ROW2_CY, R2, this.gaugeDisplay.flares / 3,  'FLARES', '#FF8C00',  4);
-
-    // Rotary valve handles between gauges (animated on sonar/flare activation)
-    this.drawValve(ctx, 490, ROW2_CY, this.valveSonarAngle, this.sonarSwitchAnim > 0, 'BALLAST');
-    this.drawValve(ctx, 790, ROW2_CY, this.valveFlareAngle, this.flareSwitchAnim > 0, 'VENT');
-
-    // ── Analog NOISE arc meter (center of row 2, between the two valves) ──
-    // Semicircle sweep gauge — purely mechanical, no digital elements
+    // ── Noise LED bar (far left, vertical) ───────────────────────────────────
     {
-      const nx = 640, ny = ROW2_CY, nr = 22;
-      const nv = Math.max(0, Math.min(1, this.noise / 100));
-      const nCol = nv <= 0.30 ? '#00FF88' : nv <= 0.60 ? '#FFD700' : nv <= 0.82 ? '#FF8800' : '#FF3333';
-      const NS = Math.PI * 0.80;  // start angle (slightly left of bottom)
-      const NSW = Math.PI * 1.4;  // sweep (252°)
+      const nv    = Math.max(0, Math.min(1, this.noise / 100));
+      const BX    = 8, BW = 7, BAR_Y = PY + 14, BAR_H = PH - 26;
+      const SEG_H = 5, SEG_GAP = 2;
+      const TOTAL = Math.floor(BAR_H / (SEG_H + SEG_GAP));
+      const LIT   = Math.round(nv * TOTAL);
 
-      // Arc background track
-      ctx.strokeStyle = 'rgba(255,255,255,0.07)'; ctx.lineWidth = 2.8;
-      ctx.beginPath(); ctx.arc(nx, ny, nr - 5, NS, NS + NSW); ctx.stroke();
-      // Filled value arc
-      if (nv > 0.01) {
-        ctx.strokeStyle = nCol; ctx.shadowColor = nCol; ctx.shadowBlur = 5;
-        ctx.lineWidth = 2.5;
-        ctx.beginPath(); ctx.arc(nx, ny, nr - 5, NS, NS + nv * NSW); ctx.stroke();
+      ctx.fillStyle = 'rgba(14,7,7,0.85)';
+      ctx.beginPath(); ctx.roundRect(BX, BAR_Y, BW, BAR_H, 3); ctx.fill();
+      ctx.strokeStyle = 'rgba(55,16,16,0.55)'; ctx.lineWidth = 0.8;
+      ctx.beginPath(); ctx.roundRect(BX, BAR_Y, BW, BAR_H, 3); ctx.stroke();
+
+      for (let s = 0; s < LIT; s++) {
+        const segY = BAR_Y + BAR_H - (s+1)*(SEG_H+SEG_GAP) + SEG_GAP;
+        const frac = s / TOTAL;
+        const col  = frac < 0.50 ? 'rgba(0,200,50,0.85)' :
+                     frac < 0.75 ? 'rgba(255,140,0,0.90)' : 'rgba(255,30,0,1.0)';
+        ctx.fillStyle = col;
+        ctx.shadowColor = col; ctx.shadowBlur = frac > 0.74 ? 6 : 3;
+        ctx.beginPath(); ctx.roundRect(BX+1, segY, BW-2, SEG_H, 1); ctx.fill();
+      }
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = 'rgba(155,38,38,0.65)';
+      ctx.font = 'bold 6px monospace'; ctx.textAlign = 'center';
+      ctx.fillText('NOISE', BX + BW/2, PY + PH - 2);
+    }
+
+    // ── Large circular status dial (hull + O2, red glow) ─────────────────────
+    {
+      const DCX = 108, DR = 50;
+      const DCY = PCY;
+      const hF  = Math.max(0, Math.min(1, this.gaugeDisplay.hull / 100));
+      const o2F = Math.max(0, Math.min(1, this.gaugeDisplay.o2 / 100));
+      const hullFlashA = this.hullBezelFlash > 0 ? (this.hullBezelFlash / 480) * 0.8 : 0;
+      const hGlowAmt   = hF > 0.5 ? 0.25 : hF > 0.25 ? 0.55 : 0.88;
+      const hCol       = hF > 0.5 ? '#cc2200' : hF > 0.25 ? '#ff4400' : '#ff0000';
+
+      // Outer glow ring
+      ctx.shadowColor = hCol; ctx.shadowBlur = 8 + hGlowAmt * 16;
+      ctx.strokeStyle = `rgba(${hF < 0.25 ? '255,0,0' : '175,28,8'},${(0.18 + hGlowAmt * 0.62).toFixed(2)})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(DCX, DCY, DR+6, 0, Math.PI*2); ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      // Hull bezel flash
+      if (hullFlashA > 0) {
+        ctx.strokeStyle = `rgba(255,80,0,${hullFlashA.toFixed(2)})`;
+        ctx.lineWidth = 5; ctx.shadowColor = '#FF4400'; ctx.shadowBlur = 18;
+        ctx.beginPath(); ctx.arc(DCX, DCY, DR+4, 0, Math.PI*2); ctx.stroke();
         ctx.shadowBlur = 0;
       }
-      // Tiny tick marks (5 ticks)
+
+      // Bezel ring
+      const bezGrad = ctx.createRadialGradient(DCX - DR*0.3, DCY - DR*0.3, DR*0.1, DCX, DCY, DR+6);
+      bezGrad.addColorStop(0, '#3a1010'); bezGrad.addColorStop(0.4, '#220808'); bezGrad.addColorStop(1, '#0e0404');
+      ctx.fillStyle = bezGrad; ctx.beginPath(); ctx.arc(DCX, DCY, DR+5, 0, Math.PI*2); ctx.fill();
+      ctx.strokeStyle = 'rgba(175,38,38,0.28)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(DCX, DCY, DR+2, 0, Math.PI*2); ctx.stroke();
+
+      // Dark face
+      const faceGrad = ctx.createRadialGradient(DCX, DCY, 0, DCX, DCY, DR);
+      faceGrad.addColorStop(0, '#1a1010'); faceGrad.addColorStop(0.85, '#0d0808'); faceGrad.addColorStop(1, '#060404');
+      ctx.fillStyle = faceGrad; ctx.beginPath(); ctx.arc(DCX, DCY, DR, 0, Math.PI*2); ctx.fill();
+
+      const SA = Math.PI * 0.80, SW = Math.PI * 1.40; // 252° sweep
+
+      // Hull arc — outer track
+      ctx.strokeStyle = 'rgba(120,20,20,0.22)'; ctx.lineWidth = 6;
+      ctx.beginPath(); ctx.arc(DCX, DCY, DR-12, SA, SA+SW); ctx.stroke();
+      if (hF > 0.01) {
+        ctx.strokeStyle = hCol; ctx.shadowColor = hCol; ctx.shadowBlur = 6;
+        ctx.lineWidth = 5; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.arc(DCX, DCY, DR-12, SA, SA + hF * SW); ctx.stroke();
+        ctx.shadowBlur = 0; ctx.lineCap = 'butt';
+      }
+
+      // O2 arc — inner track (amber, with critical pulse)
+      const o2Col    = o2F > 0.5 ? '#ff8800' : o2F > 0.2 ? '#ffaa00' : '#ff2200';
+      const o2PulseA = this.o2 < 20 ? (0.5 + 0.5 * Math.sin(this.o2BezelPhase)) : 1;
+      ctx.globalAlpha = o2PulseA;
+      ctx.strokeStyle = 'rgba(80,40,0,0.22)'; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(DCX, DCY, DR-26, SA, SA+SW); ctx.stroke();
+      if (o2F > 0.01) {
+        ctx.strokeStyle = o2Col; ctx.shadowColor = o2Col; ctx.shadowBlur = 4;
+        ctx.lineWidth = 3.5; ctx.lineCap = 'round';
+        ctx.beginPath(); ctx.arc(DCX, DCY, DR-26, SA, SA + o2F * SW); ctx.stroke();
+        ctx.shadowBlur = 0; ctx.lineCap = 'butt';
+      }
+      ctx.globalAlpha = 1;
+
+      // Tick marks (5 ticks)
       for (let t = 0; t <= 4; t++) {
-        const ta = NS + (t / 4) * NSW;
-        const tLen = t === 0 || t === 4 || t === 2 ? 5 : 3;
-        ctx.strokeStyle = 'rgba(160,148,110,0.6)'; ctx.lineWidth = 1;
+        const ta = SA + (t/4) * SW;
+        ctx.strokeStyle = 'rgba(155,45,45,0.48)'; ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(nx + Math.cos(ta)*(nr-2), ny + Math.sin(ta)*(nr-2));
-        ctx.lineTo(nx + Math.cos(ta)*(nr-2-tLen), ny + Math.sin(ta)*(nr-2-tLen));
+        ctx.moveTo(DCX + Math.cos(ta)*(DR-4), DCY + Math.sin(ta)*(DR-4));
+        ctx.lineTo(DCX + Math.cos(ta)*(DR-4-(t===0||t===4||t===2?7:4)),
+                   DCY + Math.sin(ta)*(DR-4-(t===0||t===4||t===2?7:4)));
         ctx.stroke();
       }
-      // Needle
-      const needleA = NS + nv * NSW;
-      ctx.strokeStyle = nCol; ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(nx, ny);
-      ctx.lineTo(nx + Math.cos(needleA)*(nr-7), ny + Math.sin(needleA)*(nr-7));
-      ctx.stroke();
-      // Center hub
-      ctx.fillStyle = '#4a3810'; ctx.beginPath(); ctx.arc(nx, ny, 3.5, 0, Math.PI*2); ctx.fill();
-      ctx.fillStyle = 'rgba(200,170,80,0.7)'; ctx.beginPath(); ctx.arc(nx-0.8, ny-0.8, 1.2, 0, Math.PI*2); ctx.fill();
-      // Label
-      ctx.fillStyle = 'rgba(155,142,110,0.72)'; ctx.font = 'bold 7px monospace'; ctx.textAlign = 'center';
-      ctx.fillText('NOISE', nx, ny + nr + 13);
+
+      // Centre hub
+      const hubG = ctx.createRadialGradient(DCX-2, DCY-2, 0, DCX, DCY, 9);
+      hubG.addColorStop(0, '#3a1010'); hubG.addColorStop(1, '#0e0404');
+      ctx.fillStyle = hubG; ctx.beginPath(); ctx.arc(DCX, DCY, 8, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = 'rgba(200,55,55,0.55)';
+      ctx.beginPath(); ctx.arc(DCX-1.5, DCY-1.5, 2.5, 0, Math.PI*2); ctx.fill();
+
+      // Engraved labels inside face
+      ctx.fillStyle = 'rgba(175,48,48,0.72)'; ctx.font = 'bold 7px monospace'; ctx.textAlign = 'center';
+      ctx.fillText('HULL', DCX, DCY - DR + 20);
+      ctx.fillStyle = 'rgba(155,88,18,0.62)'; ctx.font = '6px monospace';
+      ctx.fillText('O\u2082', DCX, DCY + DR - 14);
+      ctx.fillStyle = 'rgba(155,46,46,0.68)'; ctx.font = 'bold 7px monospace';
+      ctx.fillText('STATUS', DCX, DCY + DR + 14);
     }
 
-    ctx.restore(); // end perspective tilt transform
+    // ── Red button grid (2 rows × 3 cols) ────────────────────────────────────
+    {
+      interface BtnDef { label: string; glow: boolean; value?: number }
+      const BTNS: BtnDef[] = [
+        { label: 'HULL',    glow: this.hullIntegrity < 50, value: this.gaugeDisplay.hull / 100 },
+        { label: 'O\u2082', glow: this.o2 < 30,             value: this.gaugeDisplay.o2 / 100   },
+        { label: 'SONAR',   glow: this.sonarSwitchAnim > 0                                       },
+        { label: 'SEAL',    glow: false                                                           },
+        { label: 'BALLAST', glow: false                                                           },
+        { label: 'ALARM',   glow: this.hullBezelFlash > 0                                        },
+      ];
+      const BW = 56, BH = 30;
+      const COL_C = [210, 274, 338];
+      const ROW_C = [PY + 36, PY + 86, PY + 126];
+
+      for (let i = 0; i < 6; i++) {
+        const b   = BTNS[i];
+        const col = i % 3, row = Math.floor(i / 3);
+        if (row >= 2) continue; // only 2 rows with room to spare
+        const bcx = COL_C[col], bcy = ROW_C[row];
+        const bx  = bcx - BW/2, by  = bcy - BH/2;
+        const dimV = b.value !== undefined ? (0.14 + b.value * 0.36) : (b.glow ? 0.72 : 0.14);
+        const glA  = b.glow ? 0.72 + 0.28 * Math.sin(now * Math.PI * 2 * 5) : dimV;
+
+        const btnG = ctx.createLinearGradient(bx, by, bx+BW, by+BH);
+        btnG.addColorStop(0, b.glow ? '#2a0a0a' : '#1a0808');
+        btnG.addColorStop(1, b.glow ? '#180606' : '#0e0404');
+        ctx.fillStyle = btnG;
+        ctx.beginPath(); ctx.roundRect(bx, by, BW, BH, 4); ctx.fill();
+
+        ctx.strokeStyle = `rgba(${b.glow ? '220,28,28' : '115,18,18'},${glA.toFixed(2)})`;
+        ctx.lineWidth = b.glow ? 1.5 : 1;
+        if (b.glow) { ctx.shadowColor = '#bb1818'; ctx.shadowBlur = 8; }
+        ctx.beginPath(); ctx.roundRect(bx, by, BW, BH, 4); ctx.stroke();
+        ctx.shadowBlur = 0;
+
+        // Backlight LED strip at top
+        const ledA = b.glow ? (0.55 + 0.35 * Math.sin(now * Math.PI * 2 * 5)) : dimV * 0.6;
+        const ledG = ctx.createLinearGradient(bx+4, by+2, bx+BW-4, by+2);
+        ledG.addColorStop(0, 'rgba(0,0,0,0)');
+        ledG.addColorStop(0.5, `rgba(${b.glow?'195,28,28':'95,14,14'},${ledA.toFixed(2)})`);
+        ledG.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = ledG; ctx.fillRect(bx+4, by+2, BW-8, 3);
+
+        // Value fill bar (bottom of button)
+        if (b.value !== undefined && b.value > 0.05) {
+          const fillW = (BW - 10) * b.value;
+          const fCol  = b.value > 0.5 ? 'rgba(175,28,28,0.40)' :
+                        b.value > 0.25 ? 'rgba(200,48,0,0.45)' : 'rgba(220,18,0,0.55)';
+          ctx.fillStyle = fCol;
+          ctx.beginPath(); ctx.roundRect(bx+5, by+BH-8, fillW, 5, 1); ctx.fill();
+        }
+
+        ctx.fillStyle  = b.glow ? 'rgba(255,75,75,0.95)' : 'rgba(135,38,38,0.80)';
+        ctx.font       = 'bold 7px monospace'; ctx.textAlign = 'center';
+        ctx.fillText(b.label, bcx, bcy + 4);
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // CENTRE RADAR  (x: 420 .. 860, centred at 640)
+    // ══════════════════════════════════════════════════════════════════════════
+    {
+      const RCX = 640, RCY = PCY, RR = 62;
+      const sweep = now * (Math.PI * 2 / 9); // one full rotation per 9 s
+
+      // Dark backing for radar section
+      ctx.fillStyle = 'rgba(0,7,4,0.62)';
+      ctx.beginPath(); ctx.roundRect(RCX-RR-18, PY+8, (RR+18)*2, PH-16, 6); ctx.fill();
+
+      // Radar face
+      const rfGrad = ctx.createRadialGradient(RCX, RCY, 0, RCX, RCY, RR);
+      rfGrad.addColorStop(0,   '#041208');
+      rfGrad.addColorStop(0.7, '#020c05');
+      rfGrad.addColorStop(1,   '#010804');
+      ctx.fillStyle = rfGrad;
+      ctx.beginPath(); ctx.arc(RCX, RCY, RR, 0, Math.PI*2); ctx.fill();
+
+      // ── Clip all radar content to circle ──
+      ctx.save();
+      ctx.beginPath(); ctx.arc(RCX, RCY, RR, 0, Math.PI*2); ctx.clip();
+
+      // Range rings
+      for (let ring = 1; ring <= 3; ring++) {
+        ctx.strokeStyle = `rgba(0,155,58,${(0.14 - ring * 0.03).toFixed(2)})`;
+        ctx.lineWidth = 0.8;
+        ctx.beginPath(); ctx.arc(RCX, RCY, (RR/3)*ring, 0, Math.PI*2); ctx.stroke();
+      }
+      // Cross-hair
+      ctx.strokeStyle = 'rgba(0,135,48,0.14)'; ctx.lineWidth = 0.8;
+      ctx.beginPath(); ctx.moveTo(RCX-RR, RCY); ctx.lineTo(RCX+RR, RCY); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(RCX, RCY-RR); ctx.lineTo(RCX, RCY+RR); ctx.stroke();
+
+      // Sweep wedge (trailing fade)
+      for (let fade = 0; fade < 20; fade++) {
+        const a0 = sweep - (fade/20) * (Math.PI * 0.60);
+        const a1 = sweep - ((fade+1)/20) * (Math.PI * 0.60);
+        ctx.fillStyle = `rgba(0,255,80,${((1 - fade/20) * 0.20).toFixed(3)})`;
+        ctx.beginPath(); ctx.moveTo(RCX, RCY); ctx.arc(RCX, RCY, RR-2, a0, a1, true); ctx.closePath(); ctx.fill();
+      }
+      // Sweep leading edge (bright line)
+      ctx.strokeStyle = 'rgba(0,255,78,0.90)';
+      ctx.shadowColor = '#00ff50'; ctx.shadowBlur = 7; ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(RCX, RCY);
+      ctx.lineTo(RCX + Math.cos(sweep)*(RR-2), RCY + Math.sin(sweep)*(RR-2));
+      ctx.stroke(); ctx.shadowBlur = 0;
+
+      // Enemy blips — green fading dots, visible only when sonar has been active (visTimer > 0)
+      const VIEW = 600, rScale = RR / VIEW;
+      const sonarActive = this.sonarCharge < 100 || this.sonarSwitchAnim > 0;
+      for (const e of this.enemies) {
+        if (e.visTimer <= 0) continue;
+        if (!sonarActive && e.visTimer < 4800) continue; // show residual blips from last ping only
+        const ex = RCX + (e.x - this.px) * rScale;
+        const ey = RCY + (e.y - this.py) * rScale;
+        const a  = Math.min(1, e.visTimer / 5000) * 0.92;
+        ctx.fillStyle = `rgba(40,255,100,${a.toFixed(3)})`;
+        ctx.shadowColor = 'rgba(40,255,100,0.75)'; ctx.shadowBlur = 7;
+        ctx.beginPath(); ctx.arc(ex, ey, 3, 0, Math.PI*2); ctx.fill();
+        ctx.shadowBlur = 0;
+      }
+
+      // Player dot
+      ctx.fillStyle = 'rgba(0,255,100,0.90)';
+      ctx.shadowColor = '#00ff64'; ctx.shadowBlur = 5;
+      ctx.beginPath(); ctx.arc(RCX, RCY, 2.5, 0, Math.PI*2); ctx.fill();
+      ctx.shadowBlur = 0;
+
+      ctx.restore(); // end radar clip
+
+      // Radar bezel ring
+      ctx.strokeStyle = 'rgba(0,120,48,0.48)';
+      ctx.lineWidth = 2; ctx.shadowColor = 'rgba(0,195,75,0.28)'; ctx.shadowBlur = 8;
+      ctx.beginPath(); ctx.arc(RCX, RCY, RR, 0, Math.PI*2); ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      // ── Corner-bracket frame ──────────────────────────────────────────────
+      const BSIZ = RR + 14, ARM = 18;
+      const bTop  = Math.max(PY + 6,      RCY - BSIZ);
+      const bBot  = Math.min(GAME_H - 4,  RCY + BSIZ);
+      const bLeft = RCX - BSIZ, bRight = RCX + BSIZ;
+
+      ctx.strokeStyle = 'rgba(0,178,75,0.62)'; ctx.lineWidth = 1.5;
+      // TL
+      ctx.beginPath(); ctx.moveTo(bLeft+ARM, bTop); ctx.lineTo(bLeft, bTop); ctx.lineTo(bLeft, bTop+ARM); ctx.stroke();
+      // TR
+      ctx.beginPath(); ctx.moveTo(bRight-ARM, bTop); ctx.lineTo(bRight, bTop); ctx.lineTo(bRight, bTop+ARM); ctx.stroke();
+      // BL
+      ctx.beginPath(); ctx.moveTo(bLeft, bBot-ARM); ctx.lineTo(bLeft, bBot); ctx.lineTo(bLeft+ARM, bBot); ctx.stroke();
+      // BR
+      ctx.beginPath(); ctx.moveTo(bRight, bBot-ARM); ctx.lineTo(bRight, bBot); ctx.lineTo(bRight-ARM, bBot); ctx.stroke();
+
+      // Sonar-charge arc at TL corner
+      const sCF = Math.max(0, Math.min(1, this.gaugeDisplay.sonarCharge / 100));
+      ctx.strokeStyle = sCF > 0.8 ? 'rgba(0,255,78,0.72)' : 'rgba(0,145,58,0.50)';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(bLeft, bTop, 10, 0, sCF * Math.PI*2); ctx.stroke();
+
+      // SONAR label
+      ctx.fillStyle = 'rgba(0,195,68,0.52)'; ctx.font = '7px monospace'; ctx.textAlign = 'center';
+      ctx.fillText('SONAR', RCX, bBot + 12);
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // RIGHT CLUSTER — BLUE CONTROLS  (x: 860 .. 1280)
+    // ══════════════════════════════════════════════════════════════════════════
+
+    // ── Blue button grid (2 cols × 3 rows) ───────────────────────────────────
+    {
+      interface BtnDef2 { label: string; glow: boolean; value?: number }
+      const BTNS2: BtnDef2[] = [
+        { label: 'FLARE',   glow: this.flareSwitchAnim > 0, value: this.gaugeDisplay.flares / 3 },
+        { label: 'PING',    glow: this.sonarSwitchAnim > 0                                        },
+        { label: 'BALLAST', glow: false                                                            },
+        { label: 'TRIM',    glow: false                                                            },
+        { label: 'VENT',    glow: false                                                            },
+        { label: 'PURGE',   glow: false                                                            },
+      ];
+      const BW2 = 60, BH2 = 28;
+      const COL_C2 = [916, 988];
+      const ROW_C2 = [PY + 28, PY + 72, PY + 116];
+
+      for (let i = 0; i < 6; i++) {
+        const b   = BTNS2[i];
+        const col = i % 2, row = Math.floor(i / 2);
+        const bcx = COL_C2[col], bcy = ROW_C2[row];
+        const bx  = bcx - BW2/2, by = bcy - BH2/2;
+        const dimV = b.value !== undefined ? (0.14 + b.value * 0.36) : (b.glow ? 0.72 : 0.14);
+        const glA  = b.glow ? 0.78 + 0.22 * Math.sin(now * Math.PI * 2 * 5) : dimV;
+
+        const btnG2 = ctx.createLinearGradient(bx, by, bx+BW2, by+BH2);
+        btnG2.addColorStop(0, b.glow ? '#07182a' : '#050e18');
+        btnG2.addColorStop(1, b.glow ? '#040f20' : '#040912');
+        ctx.fillStyle = btnG2;
+        ctx.beginPath(); ctx.roundRect(bx, by, BW2, BH2, 4); ctx.fill();
+
+        ctx.strokeStyle = `rgba(${b.glow ? '28,138,255' : '18,75,155'},${glA.toFixed(2)})`;
+        ctx.lineWidth = b.glow ? 1.5 : 1;
+        if (b.glow) { ctx.shadowColor = '#1888ff'; ctx.shadowBlur = 10; }
+        ctx.beginPath(); ctx.roundRect(bx, by, BW2, BH2, 4); ctx.stroke();
+        ctx.shadowBlur = 0;
+
+        // Backlight LED strip
+        const ledA2 = b.glow ? (0.68 + 0.28 * Math.sin(now * Math.PI * 2 * 5)) : dimV * 0.60;
+        const ledG2 = ctx.createLinearGradient(bx+4, by+2, bx+BW2-4, by+2);
+        ledG2.addColorStop(0, 'rgba(0,0,0,0)');
+        ledG2.addColorStop(0.5, `rgba(${b.glow?'18,118,255':'8,58,148'},${ledA2.toFixed(2)})`);
+        ledG2.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = ledG2; ctx.fillRect(bx+4, by+2, BW2-8, 3);
+
+        // Value fill bar
+        if (b.value !== undefined && b.value > 0.05) {
+          const fillW2 = (BW2 - 10) * b.value;
+          ctx.fillStyle = 'rgba(18,98,215,0.45)';
+          ctx.beginPath(); ctx.roundRect(bx+5, by+BH2-7, fillW2, 4, 1); ctx.fill();
+        }
+
+        ctx.fillStyle  = b.glow ? 'rgba(75,178,255,0.95)' : 'rgba(28,98,178,0.82)';
+        ctx.font       = 'bold 7px monospace'; ctx.textAlign = 'center';
+        ctx.fillText(b.label, bcx, bcy + 4);
+      }
+    }
+
+    // ── Depth / status display (right panel) ─────────────────────────────────
+    {
+      const DX = 1052, DY = PY + 12, DW = 220, DH = PH - 24;
+      const depth = this.gaugeDisplay.depth;
+
+      // Background
+      const dpG = ctx.createLinearGradient(DX, DY, DX+DW, DY+DH);
+      dpG.addColorStop(0, '#050c1a'); dpG.addColorStop(1, '#030810');
+      ctx.fillStyle = dpG;
+      ctx.beginPath(); ctx.roundRect(DX, DY, DW, DH, 6); ctx.fill();
+
+      // Border (blue glow)
+      ctx.strokeStyle = 'rgba(9,78,195,0.55)';
+      ctx.lineWidth = 1.5; ctx.shadowColor = 'rgba(9,98,255,0.28)'; ctx.shadowBlur = 8;
+      ctx.beginPath(); ctx.roundRect(DX, DY, DW, DH, 6); ctx.stroke();
+      ctx.shadowBlur = 0;
+
+      // Corner brackets
+      const CA = 10;
+      ctx.strokeStyle = 'rgba(28,138,255,0.62)'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(DX+CA, DY); ctx.lineTo(DX, DY); ctx.lineTo(DX, DY+CA); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(DX+DW-CA, DY); ctx.lineTo(DX+DW, DY); ctx.lineTo(DX+DW, DY+CA); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(DX, DY+DH-CA); ctx.lineTo(DX, DY+DH); ctx.lineTo(DX+CA, DY+DH); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(DX+DW, DY+DH-CA); ctx.lineTo(DX+DW, DY+DH); ctx.lineTo(DX+DW-CA, DY+DH); ctx.stroke();
+
+      // Header
+      ctx.fillStyle = 'rgba(18,118,215,0.65)'; ctx.font = '8px monospace'; ctx.textAlign = 'left';
+      ctx.fillText('DEPTH', DX+10, DY+14);
+
+      // Depth value (large)
+      ctx.fillStyle = '#18a8ff'; ctx.shadowColor = '#18a8ff'; ctx.shadowBlur = 10;
+      ctx.font = 'bold 30px monospace'; ctx.textAlign = 'right';
+      ctx.fillText(`${depth.toFixed(0)}m`, DX+DW-10, DY + DH/2 + 11);
+      ctx.shadowBlur = 0;
+
+      // Secondary readouts
+      const o2v = this.gaugeDisplay.o2.toFixed(0).padStart(3, ' ');
+      const hv  = this.gaugeDisplay.hull.toFixed(0).padStart(3, ' ');
+      ctx.font = '8px monospace'; ctx.fillStyle = 'rgba(18,118,198,0.55)'; ctx.textAlign = 'left';
+      ctx.fillText(`O\u2082  ${o2v}%`, DX+10, DY+DH-30);
+      ctx.fillText(`HULL ${hv}%`, DX+10, DY+DH-16);
+    }
+  }
+
+  // ── Porthole frame: rounded viewport border ───────────────────────────────
+  private renderPortholeFrame() {
+    const ctx = this.hudCtx;
+    const PY    = Math.floor(GAME_H * 0.80); // 576
+    const FRAME = 18;
+    const RAD   = 28;
+
+    ctx.save();
+    // Dark fill around the viewport window using evenodd clipping
+    ctx.fillStyle = 'rgba(6,10,14,0.82)';
+    ctx.beginPath();
+    ctx.rect(0, 0, GAME_W, PY);
+    ctx.roundRect(FRAME, FRAME, GAME_W - FRAME*2, PY - FRAME - 6, RAD);
+    ctx.fill('evenodd');
+
+    // Inner specular rim of the porthole frame
+    ctx.strokeStyle = 'rgba(45,62,78,0.58)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.roundRect(FRAME, FRAME, GAME_W - FRAME*2, PY - FRAME - 6, RAD);
+    ctx.stroke();
+
+    // Subtle inner shadow at viewport edges
+    const vigL = ctx.createLinearGradient(FRAME, 0, FRAME+45, 0);
+    vigL.addColorStop(0, 'rgba(0,0,0,0.42)'); vigL.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = vigL; ctx.fillRect(FRAME, FRAME, 45, PY - FRAME - 6);
+    const vigR = ctx.createLinearGradient(GAME_W-FRAME-45, 0, GAME_W-FRAME, 0);
+    vigR.addColorStop(0, 'rgba(0,0,0,0)'); vigR.addColorStop(1, 'rgba(0,0,0,0.42)');
+    ctx.fillStyle = vigR; ctx.fillRect(GAME_W-FRAME-45, FRAME, 45, PY-FRAME-6);
+
+    ctx.restore();
   }
 
   // ============================================================
@@ -4851,8 +5210,11 @@ class EchoesGame {
     // Mini-map (top-left, sonar ripple overlay)
     this.renderMiniMap();
 
-    // Analog cockpit dashboard (bottom 22% of screen)
-    this.renderAnalogDashboard();
+    // Submarine control panel (bottom 20% of screen)
+    this.renderControlPanel();
+
+    // Porthole viewport frame (rounded corners above the panel)
+    this.renderPortholeFrame();
 
     // Pod bearing indicator — top-right corner
     const unreachedPods = this.pods.filter(p => !p.rescued);
@@ -4900,7 +5262,7 @@ class EchoesGame {
 
     // Low O2 vignette pulse (only in the viewport area above the panel)
     if (this.o2 < 20) {
-      const panelY = Math.floor(GAME_H * 0.785);
+      const panelY = Math.floor(GAME_H * 0.80);
       const pulse = 0.15 + Math.sin(Date.now() / 320) * 0.12;
       ctx.fillStyle = `rgba(255,0,0,${pulse})`;
       ctx.fillRect(0, 0, GAME_W, panelY);
