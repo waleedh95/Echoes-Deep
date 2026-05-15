@@ -1692,6 +1692,11 @@ class EchoesGame {
   private lastYawStress = Math.PI;  // yaw sampled last update for delta-yaw calculation
   private hullGainRampTimer = 0;    // throttle: only re-ramp gain every 2 s
 
+  // Gauge damage-reaction state
+  private gaugeVelocity = { o2: 0, depth: 0, sonarCharge: 0, hull: 0, flares: 0 };
+  private hullBezelFlash = 0;    // ms countdown — orange/red glow on hull hit
+  private o2BezelPhase = 0;      // accumulated radians for O2 critical sine pulse
+
   // RAF
   private rafId = 0; private lastT = 0;
 
@@ -2346,6 +2351,10 @@ class EchoesGame {
         this.o2 = Math.max(0, this.o2 - O2_LOSS_HIT); this.invTimer = 2200;
         this.glitchTimer = 700; this.noise = Math.min(100, this.noise + 20);
         this.hullIntegrity = Math.max(0, this.hullIntegrity - 14);
+        // Spring overshoot kick — needle slams past new value then bounces back
+        this.gaugeVelocity.hull -= 55;
+        this.gaugeVelocity.o2   -= 30;
+        this.hullBezelFlash = 480;
         this.audio.damage(); this.showSub("[ HULL BREACH — OXYGEN DEPLETED ]");
         if (e.type === "leviathan") this.audio.leviathanRoar(2);
       }
@@ -2645,8 +2654,22 @@ class EchoesGame {
     else this.valveSonarAngle = 0;
     if (Math.abs(this.valveFlareAngle) > 0.01) this.valveFlareAngle *= Math.max(0, 1 - 1.6 * dtS);
     else this.valveFlareAngle = 0;
-    // Lerp all display values toward targets (smooth needle movement)
-    const k = Math.min(1, 3.5 * dtS);
+    // Bezel flash timer
+    if (this.hullBezelFlash > 0) this.hullBezelFlash = Math.max(0, this.hullBezelFlash - dt);
+
+    // O2 critical pulse phase accumulator (1.4 Hz when below threshold)
+    if (this.o2 < 20) {
+      this.o2BezelPhase += dtS * Math.PI * 2 * 1.4;
+    } else {
+      // Decay phase back to zero so it restarts cleanly next time
+      this.o2BezelPhase = 0;
+    }
+
+    // Spring physics for all gauge needles (underdamped = overshoot + bounce)
+    // Cap dtS to 50 ms so a tab-hitch can't produce wild transient needle spikes
+    const springDtS  = Math.min(dtS, 0.05);
+    const SPRING_K   = 22;   // stiffness — higher snaps faster
+    const SPRING_DMP = 5.5;  // damping — below 2*sqrt(22)≈9.4 keeps underdamped bounce
     const depthBase = [20, 55, 82][this.lvlIdx] ?? 20;
     const depthVar = this.lvlDef ? (this.py / this.lvlDef.worldH) * 15 : 0;
     const targets = {
@@ -2657,7 +2680,9 @@ class EchoesGame {
       flares: this.flares,
     };
     for (const key of Object.keys(this.gaugeDisplay) as Array<keyof typeof this.gaugeDisplay>) {
-      this.gaugeDisplay[key] += (targets[key] - this.gaugeDisplay[key]) * k;
+      const disp = targets[key] - this.gaugeDisplay[key];
+      this.gaugeVelocity[key] += (disp * SPRING_K - this.gaugeVelocity[key] * SPRING_DMP) * springDtS;
+      this.gaugeDisplay[key] += this.gaugeVelocity[key] * springDtS;
     }
   }
 
@@ -2675,7 +2700,7 @@ class EchoesGame {
     return this.glassScratches[idx];
   }
 
-  private drawGauge(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number, value: number, label: string, needleColor: string, idx: number) {
+  private drawGauge(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number, value: number, label: string, needleColor: string, idx: number, bezGlowColor = '', bezGlowAlpha = 0, showDamageCracks = false) {
     const v = Math.max(0, Math.min(1, value));
     const START_A = Math.PI * 0.75;   // 7:30 o'clock
     const SWEEP   = Math.PI * 1.5;    // 270° sweep
@@ -2688,6 +2713,19 @@ class EchoesGame {
     bezGrad.addColorStop(1,   '#1e1508');
     ctx.fillStyle = bezGrad;
     ctx.beginPath(); ctx.arc(cx, cy, r + 9, 0, Math.PI * 2); ctx.fill();
+
+    // --- Bezel glow overlay (damage flash / O2 critical pulse) ---
+    if (bezGlowAlpha > 0 && bezGlowColor) {
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, Math.min(1, bezGlowAlpha));
+      ctx.shadowColor = bezGlowColor;
+      ctx.shadowBlur  = 18;
+      ctx.strokeStyle = bezGlowColor;
+      ctx.lineWidth   = 5;
+      ctx.beginPath(); ctx.arc(cx, cy, r + 6, 0, Math.PI * 2); ctx.stroke();
+      ctx.shadowBlur  = 0;
+      ctx.restore();
+    }
 
     // Thin specular ring on bezel
     ctx.strokeStyle = 'rgba(200,170,80,0.35)';
@@ -2768,6 +2806,35 @@ class EchoesGame {
       ctx.strokeStyle = `rgba(255,255,255,${s.a})`;
       ctx.lineWidth = 0.6;
       ctx.beginPath(); ctx.moveTo(cx + s.x1, cy + s.y1); ctx.lineTo(cx + s.x2, cy + s.y2); ctx.stroke();
+    }
+    // --- Hull damage crack overlay (shown when hull < 25%) ---
+    if (showDamageCracks) {
+      // Fracture lines emanating from a stress point near center-right
+      const cracks = [
+        { x1:  4, y1:  2, x2:  r - 4, y2: -r + 8 },
+        { x1:  4, y1:  2, x2:  r - 6, y2:  r - 12 },
+        { x1:  4, y1:  2, x2: -r + 10, y2:  r - 6 },
+        { x1:  4, y1:  2, x2: -r + 8,  y2: -r + 10 },
+        // Secondary branches off first crack
+        { x1: Math.round((r-4)*0.45) + 4, y1: Math.round((-r+8)*0.45) + 2,
+          x2: Math.round((r-4)*0.45) + 4 + 10, y2: Math.round((-r+8)*0.45) + 2 - 14 },
+        { x1: Math.round((r-4)*0.6) + 4,  y1: Math.round((-r+8)*0.6) + 2,
+          x2: Math.round((r-4)*0.6) + 4 + 16, y2: Math.round((-r+8)*0.6) + 2 + 6 },
+      ];
+      ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+      ctx.lineWidth = 0.8;
+      ctx.shadowColor = 'rgba(255,80,0,0.4)';
+      ctx.shadowBlur = 3;
+      for (const c of cracks) {
+        ctx.beginPath();
+        ctx.moveTo(cx + c.x1, cy + c.y1);
+        ctx.lineTo(cx + c.x2, cy + c.y2);
+        ctx.stroke();
+      }
+      ctx.shadowBlur = 0;
+      // Faint red tint over the glass
+      ctx.fillStyle = 'rgba(180,20,0,0.12)';
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
     }
     // Top-left specular highlight
     const hlGrad = ctx.createRadialGradient(cx - r * 0.38, cy - r * 0.38, 0, cx - r * 0.38, cy - r * 0.38, r * 0.52);
@@ -2956,7 +3023,8 @@ class EchoesGame {
     const ROW1_CY = PANEL_Y + 9 + R1_EXT;  // 540 + 9 + 39 = 588
 
     const gO2Color   = this.o2 > 50            ? '#00FF88' : this.o2 > 20            ? '#FFD700' : '#FF4422';
-    this.drawGauge(ctx,  180, ROW1_CY, R1, this.gaugeDisplay.o2 / 100,          'OXYGEN', gO2Color,  0);
+    const o2PulseA   = this.o2 < 20 ? (0.45 + 0.45 * Math.sin(this.o2BezelPhase)) : 0;
+    this.drawGauge(ctx,  180, ROW1_CY, R1, this.gaugeDisplay.o2 / 100,          'OXYGEN', gO2Color,  0, '#FF2200', o2PulseA, false);
     this.drawGauge(ctx,  640, ROW1_CY, R1, this.gaugeDisplay.depth / 100,        'DEPTH',  '#00CCFF', 1);
     this.drawGauge(ctx, 1100, ROW1_CY, R1, this.gaugeDisplay.sonarCharge / 100,  'SONAR',  '#22EEBB', 2);
 
@@ -2970,8 +3038,10 @@ class EchoesGame {
     const R2_EXT = R2 + 6;  // 30
     const ROW2_CY = ROW1_CY + R1_EXT + 9 + R2_EXT;  // 588 + 39 + 9 + 30 = 666
 
-    const gHullColor = this.hullIntegrity > 50 ? '#00FF88' : this.hullIntegrity > 25 ? '#FFD700' : '#FF4422';
-    this.drawGauge(ctx,  300, ROW2_CY, R2, this.gaugeDisplay.hull / 100,  'HULL',   gHullColor, 3);
+    const gHullColor   = this.hullIntegrity > 50 ? '#00FF88' : this.hullIntegrity > 25 ? '#FFD700' : '#FF4422';
+    const hullFlashA   = this.hullBezelFlash > 0 ? (this.hullBezelFlash / 480) * 0.85 : 0;
+    const hullCracked  = this.hullIntegrity < 25;
+    this.drawGauge(ctx,  300, ROW2_CY, R2, this.gaugeDisplay.hull / 100,  'HULL',   gHullColor, 3, '#FF5500', hullFlashA, hullCracked);
     this.drawGauge(ctx,  980, ROW2_CY, R2, this.gaugeDisplay.flares / 3,  'FLARES', '#FF8C00',  4);
 
     // Rotary valve handles between gauges (animated on sonar/flare activation)
