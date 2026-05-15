@@ -448,44 +448,48 @@ function wireMat(hexColor: number, opacity = 0): THREE.LineBasicMaterial {
   });
 }
 
-function buildObstacleEdges(rect: Rect): { lines: THREE.LineSegments; mat: THREE.LineBasicMaterial } {
+function envMat(hexColor: number, roughness = 0.9): THREE.MeshStandardMaterial {
+  return new THREE.MeshStandardMaterial({
+    color: hexColor,
+    roughness,
+    metalness: 0.05,
+  });
+}
+
+function buildObstacleMesh(rect: Rect, color: number): THREE.Mesh {
   const geo = new THREE.BoxGeometry(rect.w * WS, WALL_H, rect.h * WS);
-  const edges = new THREE.EdgesGeometry(geo);
-  const mat = wireMat(0x00DDFF);
-  const lines = new THREE.LineSegments(edges, mat);
-  lines.position.set((rect.x + rect.w / 2) * WS, WALL_H / 2, (rect.y + rect.h / 2) * WS);
-  return { lines, mat };
+  const mat = envMat(color);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set((rect.x + rect.w / 2) * WS, WALL_H / 2, (rect.y + rect.h / 2) * WS);
+  return mesh;
 }
 
-function buildFloorCell(cx2d: number, cy2d: number, cellW: number, cellH: number): { lines: THREE.LineSegments; mat: THREE.LineBasicMaterial } {
-  const geo = new THREE.PlaneGeometry(cellW * WS, cellH * WS, 2, 2);
-  const edges = new THREE.EdgesGeometry(geo);
-  const mat = wireMat(0x003366);
-  const lines = new THREE.LineSegments(edges, mat);
-  lines.rotation.x = -Math.PI / 2;
-  lines.position.set(cx2d * WS, 0.02, cy2d * WS);
-  return { lines, mat };
+function buildFloorMesh(cx2d: number, cy2d: number, cellW: number, cellH: number): THREE.Mesh {
+  const geo = new THREE.PlaneGeometry(cellW * WS, cellH * WS);
+  const mat = envMat(0x0a1622, 0.95);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.rotation.x = -Math.PI / 2;
+  mesh.position.set(cx2d * WS, 0.02, cy2d * WS);
+  return mesh;
 }
 
-function buildCeilCell(cx2d: number, cy2d: number, cellW: number, cellH: number): { lines: THREE.LineSegments; mat: THREE.LineBasicMaterial } {
-  const geo = new THREE.PlaneGeometry(cellW * WS, cellH * WS, 2, 2);
-  const edges = new THREE.EdgesGeometry(geo);
-  const mat = wireMat(0x001133);
-  const lines = new THREE.LineSegments(edges, mat);
-  lines.rotation.x = Math.PI / 2;
-  lines.position.set(cx2d * WS, WALL_H - 0.02, cy2d * WS);
-  return { lines, mat };
+function buildCeilMesh(cx2d: number, cy2d: number, cellW: number, cellH: number): THREE.Mesh {
+  const geo = new THREE.PlaneGeometry(cellW * WS, cellH * WS);
+  const mat = envMat(0x05101a, 0.95);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.rotation.x = Math.PI / 2;
+  mesh.position.set(cx2d * WS, WALL_H - 0.02, cy2d * WS);
+  return mesh;
 }
 
-function buildStalactite(x3d: number, z3d: number, onFloor: boolean, height: number): { lines: THREE.LineSegments; mat: THREE.LineBasicMaterial } {
+function buildStalactiteMesh(x3d: number, z3d: number, onFloor: boolean, height: number): THREE.Mesh {
   const r = 0.1 + Math.random() * 0.15;
-  const geo = new THREE.ConeGeometry(r, height, 5, 1);
-  const edges = new THREE.EdgesGeometry(geo);
-  const mat = wireMat(0x0055AA);
-  const lines = new THREE.LineSegments(edges, mat);
-  lines.position.set(x3d, onFloor ? height / 2 : WALL_H - height / 2, z3d);
-  if (onFloor) lines.rotation.x = Math.PI;
-  return { lines, mat };
+  const geo = new THREE.ConeGeometry(r, height, 6, 1);
+  const mat = envMat(0x162636, 0.85);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(x3d, onFloor ? height / 2 : WALL_H - height / 2, z3d);
+  if (onFloor) mesh.rotation.x = Math.PI;
+  return mesh;
 }
 
 function buildPodMesh(): { group: THREE.Group; mat: THREE.LineBasicMaterial; light: THREE.PointLight } {
@@ -912,58 +916,49 @@ function makeBillboard(text: string, color: string, scaleW = 5, scaleH = 1.2): T
 
 function buildOdysseyShip(): THREE.Group {
   const group = new THREE.Group();
-  const colors = [0x00FFFF, 0x00DDFF, 0x55AAFF, 0x88FF88, 0xFF88FF, 0x44FFAA];
-  let mi = 0;
-  const nextMat = () => {
-    const m = wireMat(colors[mi++ % colors.length], 0.18);
-    return m;
-  };
+  // Lit deep-sea wreck materials — rusted/encrusted hull tones
+  const hullMat = new THREE.MeshStandardMaterial({ color: 0x3a4452, roughness: 0.85, metalness: 0.35 });
+  const deckMat = new THREE.MeshStandardMaterial({ color: 0x2d3744, roughness: 0.9, metalness: 0.25 });
+  const trimMat = new THREE.MeshStandardMaterial({ color: 0x4a3a2e, roughness: 0.9, metalness: 0.4 }); // rusty
+  const detailMat = new THREE.MeshStandardMaterial({ color: 0x222a34, roughness: 0.9, metalness: 0.3 });
 
-  // Hull (long box, oriented along X — the player approaches from the front so this is broadside)
+  // Hull (long box)
   const hullGeo = new THREE.BoxGeometry(7, 1.6, 1.8);
-  const hullWire = new THREE.LineSegments(new THREE.EdgesGeometry(hullGeo), nextMat());
-  hullWire.position.set(0, 0.8, 0);
-  group.add(hullWire);
+  const hull = new THREE.Mesh(hullGeo, hullMat);
+  hull.position.set(0, 0.8, 0);
+  group.add(hull);
   // Bow taper (front of ship)
-  const bowGeo = new THREE.BoxGeometry(1.4, 1.2, 1.2);
-  const bow = new THREE.LineSegments(new THREE.EdgesGeometry(bowGeo), nextMat());
+  const bow = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.2, 1.2), hullMat);
   bow.position.set(4.0, 0.7, 0); group.add(bow);
-  // Deck superstructure (lower)
-  const deckGeo = new THREE.BoxGeometry(4.0, 0.8, 1.4);
-  const deck = new THREE.LineSegments(new THREE.EdgesGeometry(deckGeo), nextMat());
+  // Deck superstructure
+  const deck = new THREE.Mesh(new THREE.BoxGeometry(4.0, 0.8, 1.4), deckMat);
   deck.position.set(-0.5, 1.95, 0); group.add(deck);
   // Bridge (raised cabin)
-  const bridgeGeo = new THREE.BoxGeometry(2.0, 1.0, 1.2);
-  const bridge = new THREE.LineSegments(new THREE.EdgesGeometry(bridgeGeo), nextMat());
+  const bridge = new THREE.Mesh(new THREE.BoxGeometry(2.0, 1.0, 1.2), deckMat);
   bridge.position.set(-0.8, 2.85, 0); group.add(bridge);
   // Smokestack
-  const stackGeo = new THREE.CylinderGeometry(0.28, 0.34, 1.2, 6);
-  const stack = new THREE.LineSegments(new THREE.EdgesGeometry(stackGeo), nextMat());
+  const stack = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.34, 1.2, 12), trimMat);
   stack.position.set(-1.6, 3.85, 0); group.add(stack);
   // Crane / cargo arm
-  const armGeo = new THREE.BoxGeometry(2.6, 0.12, 0.12);
-  const arm = new THREE.LineSegments(new THREE.EdgesGeometry(armGeo), nextMat());
+  const arm = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.12, 0.12), trimMat);
   arm.position.set(1.6, 3.2, 0); arm.rotation.z = -0.35; group.add(arm);
   // Mast (tall thin pole)
-  const mastGeo = new THREE.CylinderGeometry(0.06, 0.06, 3.5, 4);
-  const mast = new THREE.LineSegments(new THREE.EdgesGeometry(mastGeo), nextMat());
+  const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 3.5, 8), detailMat);
   mast.position.set(0.4, 4.6, 0); group.add(mast);
   // Antenna spokes
   for (let i = 0; i < 3; i++) {
-    const wGeo = new THREE.BoxGeometry(0.7, 0.04, 0.04);
-    const w = new THREE.LineSegments(new THREE.EdgesGeometry(wGeo), nextMat());
+    const w = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.04, 0.04), detailMat);
     w.position.set(0.4, 4.6 + i * 0.5, 0); group.add(w);
   }
   // Rails along deck
   for (let side = -1; side <= 1; side += 2) {
-    const railGeo = new THREE.BoxGeometry(7, 0.04, 0.04);
-    const rail = new THREE.LineSegments(new THREE.EdgesGeometry(railGeo), nextMat());
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(7, 0.04, 0.04), detailMat);
     rail.position.set(0, 1.7, side * 0.85); group.add(rail);
   }
 
-  // Hull text plane: "RESEARCH VESSEL ODYSSEY"
-  const tex = makeTextTexture("RESEARCH VESSEL\nODYSSEY", 1024, 256, "#88EEFF", true);
-  const textMat = new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+  // Hull text plane: "RESEARCH VESSEL ODYSSEY" — kept as faintly self-illuminated stencil
+  const tex = makeTextTexture("RESEARCH VESSEL\nODYSSEY", 1024, 256, "#C8DCE8", false);
+  const textMat = new THREE.MeshStandardMaterial({ map: tex, transparent: true, opacity: 0.9, depthWrite: false, side: THREE.DoubleSide, roughness: 0.95, metalness: 0.0 });
   const textPlane = new THREE.Mesh(new THREE.PlaneGeometry(4.5, 1.1), textMat);
   textPlane.position.set(0.4, 0.85, 0.92); group.add(textPlane);
   const textPlaneB = new THREE.Mesh(new THREE.PlaneGeometry(4.5, 1.1), textMat.clone());
@@ -1230,8 +1225,8 @@ class EchoesGame {
 
     // Scene
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x000510);
-    this.scene.fog = new THREE.FogExp2(0x000814, 0.013);
+    this.scene.background = new THREE.Color(0x04101a);
+    this.scene.fog = new THREE.FogExp2(0x04101a, 0.055);
 
     // Camera
     this.camera = new THREE.PerspectiveCamera(75, GAME_W / GAME_H, 0.05, 500);
@@ -1242,14 +1237,25 @@ class EchoesGame {
     this.sceneGroup = new THREE.Group();
     this.scene.add(this.sceneGroup);
 
-    // Dim ambient (only affects solid cockpit)
-    this.scene.add(new THREE.AmbientLight(0x081020, 0.55));
-    this.scene.add(new THREE.HemisphereLight(0x113355, 0x000511, 0.35));
+    // Murky baseline ambient + hemisphere so the world is faintly visible everywhere
+    this.scene.add(new THREE.AmbientLight(0x223344, 0.35));
+    this.scene.add(new THREE.HemisphereLight(0x355577, 0x06101a, 0.55));
 
-    // Effect composer with bloom
+    // Sub headlight — forward-facing spotlight parented to the camera (porthole view)
+    const headlight = new THREE.SpotLight(0xCCE6FF, 6.0, 30, Math.PI / 4.5, 0.55, 1.4);
+    headlight.position.set(0, 0, 0);
+    headlight.target.position.set(0, 0, -1);
+    this.camera.add(headlight);
+    this.camera.add(headlight.target);
+    // Soft close-range fill so nearby walls aren't pitch black at the edges of the cone
+    const fill = new THREE.PointLight(0x6688AA, 0.7, 8);
+    fill.position.set(0, 0, 0);
+    this.camera.add(fill);
+
+    // Effect composer with subtle bloom (just for highlights — flares, HUD glow, eyes)
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
-    const bloom = new UnrealBloomPass(new THREE.Vector2(GAME_W, GAME_H), 2.1, 0.6, 0.04);
+    const bloom = new UnrealBloomPass(new THREE.Vector2(GAME_W, GAME_H), 0.45, 0.4, 0.75);
     this.composer.addPass(bloom);
 
     // Build cockpit (attached to camera)
@@ -1377,24 +1383,17 @@ class EchoesGame {
     this.flareMeshes = [];
     this.particleSystem = null; // (lived in sceneGroup; already removed above)
 
-    // Color palette for variety (rainbow wireframe vibe matching reference image)
-    const wallPalette = [0x00FFFF, 0x00DDFF, 0x44AAFF, 0x66FFCC, 0xFF55CC, 0x9966FF];
+    // Muted deep-sea rock palette for solid lit walls
+    const wallPalette = [0x2a3a4a, 0x223040, 0x304050, 0x1f2a35, 0x283848, 0x35455a];
 
-    // Obstacle boxes — base alpha so always faintly visible (deep ocean glow)
+    // Obstacle boxes — solid lit meshes (no sonar reveal — visible at all times)
     let pi = 0;
     for (const rect of def.obstacles) {
       const c = wallPalette[pi++ % wallPalette.length];
-      const baseAlpha = 0.10; // always faintly visible
-      const geo = new THREE.BoxGeometry(rect.w * WS, WALL_H, rect.h * WS);
-      const edges = new THREE.EdgesGeometry(geo);
-      const mat = wireMat(c, baseAlpha);
-      const lines = new THREE.LineSegments(edges, mat);
-      lines.position.set((rect.x + rect.w / 2) * WS, WALL_H / 2, (rect.y + rect.h / 2) * WS);
-      this.sceneGroup.add(lines);
-      this.revealObjs.push({ lines, mat, cx: rect.x + rect.w / 2, cy: rect.y + rect.h / 2, alpha: baseAlpha, baseAlpha });
+      this.sceneGroup.add(buildObstacleMesh(rect, c));
     }
 
-    // Floor grid cells
+    // Floor grid cells — solid lit floor + ceiling
     const fCols = Math.ceil(def.worldW / FLOOR_CELL);
     const fRows = Math.ceil(def.worldH / FLOOR_CELL);
     for (let row = 0; row < fRows; row++) {
@@ -1402,31 +1401,21 @@ class EchoesGame {
         const cx = (col + 0.5) * FLOOR_CELL, cy = (row + 0.5) * FLOOR_CELL;
         const cellW = Math.min(FLOOR_CELL, def.worldW - col * FLOOR_CELL);
         const cellH = Math.min(FLOOR_CELL, def.worldH - row * FLOOR_CELL);
-        const { lines, mat } = buildFloorCell(cx, cy, cellW, cellH);
-        mat.opacity = 0.06;
-        this.sceneGroup.add(lines);
-        this.revealObjs.push({ lines, mat, cx, cy, alpha: 0.06, baseAlpha: 0.06 });
+        this.sceneGroup.add(buildFloorMesh(cx, cy, cellW, cellH));
         if ((col + row) % 2 === 0) {
-          const { lines: cl, mat: cm } = buildCeilCell(cx, cy, cellW * 2, cellH * 2);
-          cm.opacity = 0.05;
-          this.sceneGroup.add(cl);
-          this.revealObjs.push({ lines: cl, mat: cm, cx, cy, alpha: 0.05, baseAlpha: 0.05 });
+          this.sceneGroup.add(buildCeilMesh(cx, cy, cellW * 2, cellH * 2));
         }
       }
     }
 
-    // Stalactites / stalagmites
+    // Stalactites / stalagmites — solid lit cones
     const stalaCount = Math.floor(def.worldW * def.worldH / 40000);
     for (let i = 0; i < stalaCount; i++) {
       const x3d = (50 + Math.random() * (def.worldW - 100)) * WS;
       const z3d = (50 + Math.random() * (def.worldH - 100)) * WS;
       const h = 0.8 + Math.random() * 3;
       const onFloor = Math.random() > 0.5;
-      const { lines, mat } = buildStalactite(x3d, z3d, onFloor, h);
-      mat.opacity = 0.08;
-      this.sceneGroup.add(lines);
-      const cx2d = x3d / WS, cy2d = z3d / WS;
-      this.revealObjs.push({ lines, mat, cx: cx2d, cy: cy2d, alpha: 0.08, baseAlpha: 0.08 });
+      this.sceneGroup.add(buildStalactiteMesh(x3d, z3d, onFloor, h));
     }
 
     // Bioluminescent point lights scattered throughout (always visible — deep ocean)
