@@ -3157,7 +3157,7 @@ class EchoesGame {
         const d = Math.hypot(ro.cx - p.x, ro.cy - p.y);
         if (d >= inner && d <= outer) {
           p.paintedObjects.add(ri);
-          const dur = p.type === "flare" ? 3000 : 4000;
+          const dur = 3000;
           const tint = p.type === "flare" ? 0xFF8C00 : 0x22BBFF;
           ro.fadeTimer = dur;
           ro.fadeDuration = dur;
@@ -4145,6 +4145,120 @@ class EchoesGame {
   // ============================================================
   // HUD (drawn on hudCanvas)
   // ============================================================
+  private renderMiniMap() {
+    const def = this.lvlDef;
+    if (!def) return;
+    const ctx = this.hudCtx;
+
+    const MM_SIZE = 120;
+    const MM_X    = 12;
+    const MM_Y    = 12;
+    const MM_CX   = MM_X + MM_SIZE / 2;
+    const MM_CY   = MM_Y + MM_SIZE / 2;
+    const HALF    = MM_SIZE / 2;        // 60 px
+    const VIEW    = 500;                // world-units from center to edge
+    const scale   = HALF / VIEW;
+
+    // world → minimap pixel
+    const wx = (wx: number) => MM_CX + (wx - this.px) * scale;
+    const wy = (wy: number) => MM_CY + (wy - this.py) * scale;
+
+    ctx.save();
+
+    // Circular clip
+    ctx.beginPath();
+    ctx.arc(MM_CX, MM_CY, HALF, 0, Math.PI * 2);
+    ctx.clip();
+
+    // Background
+    ctx.fillStyle = "rgba(0,8,18,0.84)";
+    ctx.fillRect(MM_X, MM_Y, MM_SIZE, MM_SIZE);
+
+    // Subtle grid
+    ctx.strokeStyle = "rgba(0,180,200,0.06)";
+    ctx.lineWidth = 0.5;
+    for (let g = -2; g <= 2; g++) {
+      const gx = MM_CX + g * (HALF / 2);
+      const gy = MM_CY + g * (HALF / 2);
+      ctx.beginPath(); ctx.moveTo(gx, MM_Y); ctx.lineTo(gx, MM_Y + MM_SIZE); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(MM_X, gy); ctx.lineTo(MM_X + MM_SIZE, gy); ctx.stroke();
+    }
+
+    // ── Sonar rings ──
+    for (const p of this.pings) {
+      const rx = wx(p.x);
+      const ry = wy(p.y);
+      const rMM = p.radius * scale;
+      const progress = p.radius / p.maxRadius;
+      const alpha = Math.max(0, 1 - progress);
+      let ringColor: string;
+      if (p.type === "flare")       ringColor = `rgba(255,140,0,${(alpha * 0.85).toFixed(3)})`;
+      else if (p.type === "large")  ringColor = `rgba(0,230,255,${(alpha * 0.90).toFixed(3)})`;
+      else if (p.type === "boost")  ringColor = `rgba(160,160,160,${(alpha * 0.75).toFixed(3)})`;
+      else                          ringColor = `rgba(0,210,255,${(alpha * 0.85).toFixed(3)})`;
+
+      ctx.strokeStyle = ringColor;
+      ctx.shadowColor = ringColor;
+      ctx.shadowBlur  = 5;
+      ctx.lineWidth   = 1.5;
+      ctx.beginPath();
+      ctx.arc(rx, ry, Math.max(0.5, rMM), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
+
+    // ── Revealed terrain dots (cyan, fade with fadeTimer) ──
+    for (const ro of this.revealObjs) {
+      if (ro.fadeTimer <= 0) continue;
+      const dotX = wx(ro.cx);
+      const dotY = wy(ro.cy);
+      const a = Math.min(1, ro.fadeTimer / ro.fadeDuration) * 0.55;
+      ctx.fillStyle = `rgba(0,220,255,${a.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(dotX, dotY, 1.8, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // ── Enemy dots (red, fade with visTimer) ──
+    for (const e of this.enemies) {
+      if (e.visTimer <= 0) continue;
+      const dotX = wx(e.x);
+      const dotY = wy(e.y);
+      const a = Math.min(1, e.visTimer / 1500) * 0.9;
+      ctx.fillStyle   = `rgba(255,50,50,${a.toFixed(3)})`;
+      ctx.shadowColor = `rgba(255,50,50,0.7)`;
+      ctx.shadowBlur  = 5;
+      ctx.beginPath();
+      ctx.arc(dotX, dotY, 2.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+
+    // ── Player dot ──
+    ctx.fillStyle   = "rgba(0,255,180,0.95)";
+    ctx.shadowColor = "rgba(0,255,180,0.7)";
+    ctx.shadowBlur  = 7;
+    ctx.beginPath();
+    ctx.arc(MM_CX, MM_CY, 3, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.shadowBlur = 0;
+
+    ctx.restore();
+
+    // Bezel ring
+    ctx.strokeStyle = "rgba(0,200,230,0.45)";
+    ctx.lineWidth   = 1.2;
+    ctx.beginPath();
+    ctx.arc(MM_CX, MM_CY, HALF, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // Label
+    ctx.fillStyle  = "rgba(0,200,230,0.50)";
+    ctx.font       = "8px monospace";
+    ctx.textAlign  = "center";
+    ctx.fillText("SONAR", MM_CX, MM_Y + MM_SIZE + 11);
+  }
+
   private renderHUD() {
     if (this.state !== "PLAYING" && this.state !== "CHOICE") return;
     const ctx = this.hudCtx;
@@ -4154,6 +4268,9 @@ class EchoesGame {
 
     // Level name stays at top
     this.renderLvlName(GAME_W / 2 + gx, 18 + gy);
+
+    // Mini-map (top-left, sonar ripple overlay)
+    this.renderMiniMap();
 
     // Analog cockpit dashboard (bottom 22% of screen)
     this.renderAnalogDashboard();
