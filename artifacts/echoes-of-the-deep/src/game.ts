@@ -747,10 +747,30 @@ class EchoesGame {
 
   private async getLeviathanModelClone(): Promise<THREE.Object3D> {
     if (!this.leviathanModelPromise) {
+      const url = `${import.meta.env.BASE_URL}leviathan.glb`;
+      // eslint-disable-next-line no-console
+      console.log("[leviathan] loading", url);
       const p = new Promise<THREE.Object3D>((resolve, reject) => {
         const loader = new GLTFLoader();
-        const url = `${import.meta.env.BASE_URL}leviathan.glb`;
-        loader.load(url, (gltf) => resolve(gltf.scene), undefined, (err) => reject(err));
+        loader.load(
+          url,
+          (gltf) => {
+            // eslint-disable-next-line no-console
+            console.log("[leviathan] loaded", gltf.scene);
+            resolve(gltf.scene);
+          },
+          (xhr) => {
+            if (xhr.total) {
+              // eslint-disable-next-line no-console
+              console.log(`[leviathan] ${Math.round((xhr.loaded / xhr.total) * 100)}%`);
+            }
+          },
+          (err) => {
+            // eslint-disable-next-line no-console
+            console.error("[leviathan] load error:", err);
+            reject(err);
+          },
+        );
       });
       // Self-heal: on failure, clear the cache so a later level entry can retry.
       p.catch(() => { if (this.leviathanModelPromise === p) this.leviathanModelPromise = null; });
@@ -1338,15 +1358,20 @@ class EchoesGame {
     const boosting = this.keys["ShiftLeft"] || this.keys["ShiftRight"];
     const spd = PLAYER_SPEED * (boosting ? PLAYER_BOOST_MULT : 1);
 
-    // Camera-relative movement: W=forward, S=back, A=strafe-left, D=strafe-right
-    // Project camera yaw onto the 2D world plane (yaw=0 faces +Z = +Y in 2D)
-    const fwdX = Math.sin(this.yaw);   // world X component of forward
-    const fwdY = Math.cos(this.yaw);   // world Y component of forward
+    // Standard FPS controls: W=forward, S=back, A=strafe-left, D=strafe-right
+    // Three.js default camera forward is (0,0,-1); rotated by yaw around Y =>
+    //   forward3D = (-sin(yaw), 0, -cos(yaw))
+    //   right3D   = ( cos(yaw), 0, -sin(yaw))
+    // 2D world maps Z->Y, so 2D forward = (-sin(yaw), -cos(yaw))
+    const fwdX  = -Math.sin(this.yaw);
+    const fwdY  = -Math.cos(this.yaw);
+    const rgtX  =  Math.cos(this.yaw);
+    const rgtY  = -Math.sin(this.yaw);
     let ax = 0, ay = 0;
     if (this.keys["KeyW"] || this.keys["ArrowUp"])    { ax += fwdX * spd; ay += fwdY * spd; }
     if (this.keys["KeyS"] || this.keys["ArrowDown"])  { ax -= fwdX * spd; ay -= fwdY * spd; }
-    if (this.keys["KeyA"] || this.keys["ArrowLeft"])  { ax -= fwdY * spd; ay += fwdX * spd; }
-    if (this.keys["KeyD"] || this.keys["ArrowRight"]) { ax += fwdY * spd; ay -= fwdX * spd; }
+    if (this.keys["KeyA"] || this.keys["ArrowLeft"])  { ax -= rgtX * spd; ay -= rgtY * spd; }
+    if (this.keys["KeyD"] || this.keys["ArrowRight"]) { ax += rgtX * spd; ay += rgtY * spd; }
 
     this.pvx += ax * dtS; this.pvy += ay * dtS;
     this.pvx *= PLAYER_FRICTION; this.pvy *= PLAYER_FRICTION;
