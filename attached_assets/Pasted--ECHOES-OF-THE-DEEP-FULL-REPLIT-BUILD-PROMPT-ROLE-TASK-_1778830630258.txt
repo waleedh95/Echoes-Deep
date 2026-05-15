@@ -1,0 +1,307 @@
+# ECHOES OF THE DEEP — FULL REPLIT BUILD PROMPT
+
+## ROLE & TASK
+You are an expert game developer. Build me a complete, fully playable browser game called **Echoes of the Deep** using **HTML5 Canvas + JavaScript** (no external libraries except Howler.js for audio). The game must be a single `index.html` file that runs entirely in the browser on Replit. Follow every detail below exactly.
+
+---
+
+## GAME OVERVIEW
+
+- **Title:** Echoes of the Deep
+- **Genre:** Atmospheric Deep-Sea Exploration / Psychological Horror / Puzzle-Survival
+- **Platform:** Browser (HTML5 Canvas)
+- **Perspective:** Top-down 2D with a 3D depth illusion using layered parallax and wireframe rendering
+- **Resolution:** 1280x720 (scale to fit window)
+- **Visual Style:** Pure black background. All geometry rendered as neon wireframes. Blues (#00FFFF) for environment. Greens (#00FF88) for safe objects. Reds (#FF3333) for danger/enemies. UI is a retro glitching submarine dashboard with scanlines overlay.
+- **Audio:** Deep oppressive ocean ambiance at all times. Sonar ping is a sharp satisfying echo. Enemies emit a rhythmic mechanical breathing that in the final ending transitions to a hospital ventilator sound.
+
+---
+
+## FULL STORY & NARRATIVE
+
+### Protagonist: ELIAS
+- Elias is a deep-sea rescue pilot in his 40s.
+- He is calm, methodical, and speaks in short professional sentences.
+- He believes he is on an official rescue mission to save a family trapped in a research submarine in the Mariana Trench.
+- His HUD displays four face icons (his family) but their faces are blurred and pixelated — he cannot identify them clearly.
+- As levels progress, his dialogue fragments reveal he is suppressing traumatic memories.
+
+### The Truth (Hidden from player until the end)
+- Elias is actually in a coma in a hospital. He has been for 10 years.
+- His family died in a boating accident 10 years ago. He could not save them.
+- The entire game — the ocean, the submarine, the rescue mission — is his comatose mind constructing a world where he CAN save them, replaying the trauma endlessly.
+- The "Sound-Hunters" (enemies) are the rhythmic sounds of his hospital ventilator and EKG machine bleeding into his dream.
+- The wireframe ocean is his brain's fragmented, half-conscious reconstruction of reality.
+
+### Story Beats Per Level
+
+**LEVEL 1 — The Descent**
+- Elias descends into the trench. Comms are fuzzy.
+- He finds the first survivor: the MOTHER (Sara). She is unconscious. He docks with her lifepod.
+- Cutscene (comic panel): A blurry memory — a family on a boat, laughing. Elias's hand reaches for someone but the image cuts to black.
+- Elias whispers: *"I found one. I'll find the rest."*
+
+**LEVEL 2 — The Pressure Zone**
+- Deeper. More enemies. Tighter corridors.
+- Elias finds the ELDEST SON (Noah), trapped under debris. He must solve a sound-based puzzle to free him without attracting enemies.
+- Cutscene (comic panel): A clearer memory flash — a child's drawing of a submarine. The word "DAD" written in crayon. The image cracks like glass.
+- Elias: *"You're safe now. I've got you."* (His voice breaks slightly.)
+
+**LEVEL 3 — The Abyss (Final Level)**
+- Oxygen is at 20% and dropping. Two lifepods remain deep in the trench.
+- Inside: the YOUNGER SON (Liam, age 7) and the DAUGHTER (Mia, age 5).
+- Elias reaches both pods but his oxygen cannot sustain two rescue docks.
+
+### THE CLIMACTIC CHOICE (Final Gameplay Moment)
+The player sees two glowing lifepods side by side. A UI prompt appears:
+
+**[E] DOCK WITH POD A — Save Liam (Oxygen: 12% remaining)**
+**[Q] DOCK WITH POD B — Save Mia (Oxygen: 12% remaining)**
+**[R] REROUTE SUIT OXYGEN — Save Both (Elias will not survive)**
+
+**ENDING A — Save One Child:**
+- Elias docks with one pod. The other pod's light goes dark.
+- He surfaces. The wireframe ocean begins glitching heavily.
+- Cut to: A hospital room rendered in washed-out whites and greys. Elias is lying in a bed. A nurse adjusts a ventilator. The rhythmic enemy breathing sound IS the ventilator — seamless audio transition.
+- A doctor says quietly: *"His brain activity just spiked. Then flatlined."*
+- Final comic panel: A newspaper clipping. "Man, 38, remains in coma after failing to save family in boating accident. Pronounced brain-dead today."
+- Screen fades to black. Text: *"He saved one. In his mind, that was enough to finally let go."*
+
+**ENDING B — Sacrifice (Save Both):**
+- Elias reroutes oxygen. His HUD flickers. His vision blurs.
+- Both pods lock in. Children's voices (distorted, dreamy): *"Dad?"*
+- The wireframe ocean dissolves completely into white.
+- Cut to: The hospital room. A heart monitor flatlines.
+- The nurse gasps. Then — silence.
+- Final comic panel: The same newspaper clipping — but pinned to a corkboard in a child's bedroom. Two crayon drawings beside it. Two submarines. Two stick figures inside.
+- Text: *"He saved them all. Even if only in the place that mattered."*
+
+### Narrative Delivery
+- Between levels: Full-screen 2D comic panel cutscenes drawn in black-ink manga style with neon color accents. Each panel has animated text dialogue that types out character by character.
+- In-level: Elias speaks short lines of dialogue as floating text on the HUD (subtitles style).
+
+---
+
+## CHARACTERS
+
+### ELIAS (Player Character)
+- Visual: A wireframe humanoid figure inside a glowing submarine chassis (top-down view). Cyan wireframe.
+- Personality: Stoic, professional, but emotionally cracking under the surface.
+- Voice: Low, calm. Dialogue delivered as typed HUD text.
+- Special ability: Can emit a sonar ping from his suit.
+
+### SARA (Mother — Level 1 Rescue)
+- Visual: A wireframe figure curled inside an oval lifepod. Green glow.
+- Story role: First person Elias saves. Represents hope.
+- Dialogue (heard via comms, static-heavy): *"...is someone there?... please..."*
+
+### NOAH (Eldest Son — Level 2 Rescue)
+- Age: 16. Calm under pressure like his father.
+- Visual: Taller wireframe figure. Slightly damaged pod (cracked wireframe lines).
+- Dialogue: *"Dad? ...Dad, is that you?"* (Elias does not react to the word "Dad.")
+
+### LIAM (Younger Son — Level 3, Pod A)
+- Age: 7. Scared. Banging on the pod walls.
+- Visual: Small wireframe figure, animated as pacing/panicking inside the pod.
+- Dialogue: *"It's dark. I don't like the dark."*
+
+### MIA (Daughter — Level 3, Pod B)
+- Age: 5. Eerily calm. Humming a lullaby.
+- Visual: Tiny wireframe figure, sitting still.
+- Dialogue: *"The fishies are sleeping. Are you sleeping too?"*
+- Note: Mia's calm is the most psychologically disturbing element. She hums the same melody as the ambient ocean track.
+
+### THE SOUND-HUNTERS (Enemies)
+- Visual: Completely invisible by default. Only revealed briefly by sonar pings — when revealed they appear as jagged, angular, fragmented wireframe shapes. Like broken geometry. Wrong proportions. Too many limbs.
+- Behavior: They patrol set paths. If Noise Meter exceeds threshold, they home in on the noise source.
+- Sound: They emit a rhythmic mechanical breathing — INHALE (2 seconds) EXHALE (2 seconds). This is the heartbeat of the horror.
+- On contact: Hull damage animation (screen cracks red, oxygen drops 15%).
+- Types:
+  - **DRIFTER** (Level 1): Slow, wide patrol radius. Easy to avoid. 1 per zone.
+  - **STALKER** (Level 2): Faster. Pauses and "listens" when it detects faint noise. 2 per zone.
+  - **VOID LEVIATHAN** (Level 3): Massive. Its movement creates noise that interferes with Elias's own sonar. 1 per level, always present.
+
+---
+
+## CONTROLS
+
+| Action | Keyboard | Description |
+|---|---|---|
+| Move Forward | W | Thrust submarine forward |
+| Move Backward | S | Thrust submarine backward |
+| Strafe Left | A | Move left |
+| Strafe Right | D | Move right |
+| Sonar Ping (Small) | Left Click (tap) | Small quiet ping, short range, low noise |
+| Sonar Ping (Large) | Left Click (hold 1s) | Wide ping, long range, HIGH noise — attracts enemies |
+| Drop Flare | F | Drops a sinking object that pings continuously for 8 seconds — used as a decoy |
+| Engine Boost | Shift | Move 2x speed but generates continuous loud noise + burns extra oxygen |
+| Interact / Dock | E | Dock with lifepods, collect data logs |
+| Pause | Escape | Pause menu |
+
+**Mouse:** Controls the direction Elias faces / sonar ping direction.
+
+---
+
+## GAMEPLAY MECHANICS — FULL DETAIL
+
+### 1. ECHOLOCATION (THE VISION SYSTEM)
+- The screen is pure black at all times by default.
+- When a sonar ping is emitted, a circular wave expands outward from Elias.
+- Every piece of geometry the wave touches lights up as a neon wireframe for 3–5 seconds then fades back to black.
+- Ping types:
+  - **Small Ping:** Radius 150px, fades in 3 seconds, Noise +5
+  - **Large Ping:** Radius 350px, fades in 5 seconds, Noise +25
+  - **Flare:** Continuous small pings every 1.5 seconds from flare position for 8 seconds total, Noise +3 per ping
+  - **Boost Noise:** While Shift held, Noise +2 per second passively
+- Wireframe colors:
+  - Walls/terrain: Cyan (#00FFFF)
+  - Lifepods: Green (#00FF88), pulsing glow
+  - Data logs: Yellow (#FFD700)
+  - Enemies (when pinged): Red (#FF3333), jagged distortion effect
+  - Elias's submarine: Always visible, soft blue glow
+
+### 2. NOISE METER
+- Displayed on HUD as a horizontal bar labeled "ACOUSTIC SIGNATURE"
+- Range: 0–100
+- Decays by 5 points per second passively (silence lowers it)
+- Thresholds:
+  - 0–30: SAFE (green bar)
+  - 31–60: CAUTION (yellow bar, enemies become alert — move faster)
+  - 61–80: DANGER (orange bar, enemies home toward noise source)
+  - 81–100: CRITICAL (red bar, all enemies in level converge on Elias immediately)
+
+### 3. OXYGEN SYSTEM
+- Displayed on HUD as a circular gauge labeled "O2"
+- Starts at 100% per level
+- Depletes at 1% per 3 seconds (normal movement)
+- Depletes at 1% per 1 second (boost active)
+- Depletes 15% instantly on enemy contact
+- When O2 hits 0%: Screen goes dark, Elias whispers *"I'm sorry..."*, game over screen with option to restart level
+- Docking with a lifepod restores 20% O2
+
+### 4. MOVEMENT PHYSICS
+- Elias's submarine has simulated momentum — acceleration and deceleration, not instant stop/start
+- Moving through tight corridors requires careful speed control
+- Walls are solid collision objects
+- Flares sink downward slowly after being dropped (simulated gravity in water)
+
+### 5. PUZZLE MECHANIC (LEVEL 2)
+- Noah's pod is trapped behind a debris field
+- Three sound-emitting objects are in the area, each producing noise at different volumes
+- The player must navigate to each object and interact (E) to silence them one by one
+- But silencing each one ALSO dims the wireframe visibility (less ambient sound = less echolocation)
+- A Sound-Hunter patrols the area — the player must time interactions between its breathing cycles
+- When all three objects are silenced: debris field disintegrates (wireframe shatters), Noah's pod floats free
+
+---
+
+## LEVEL DESIGN
+
+### LEVEL 1 — THE DESCENT
+- **Shape:** Long vertical corridor descending, with branching side tunnels
+- **Width:** Corridors are 3x the submarine size — tight but navigable
+- **Key locations:**
+  - START: Open water, tutorial prompts appear as HUD text
+  - MID: First Sound-Hunter (DRIFTER) encountered — it patrols a wide loop
+  - END: Sara's lifepod in a collapsed research station. Must navigate rubble field.
+- **Environmental details:** Wireframe fish school in background (cosmetic). Broken submarine wreckage. Floating debris.
+- **Oxygen challenge:** Should complete with 60–70% oxygen remaining if played carefully
+- **Tutorial prompts:** "TAP LEFT CLICK to ping. Hold for a larger ping. Stay quiet."
+
+### LEVEL 2 — THE PRESSURE ZONE
+- **Shape:** Maze-like with multiple dead ends, forcing careful exploration
+- **Width:** Some corridors as narrow as 1.5x submarine width — boost is risky
+- **Key locations:**
+  - ZONE A: Two STALKER enemies patrol crossing paths. Must time movement through gap.
+  - ZONE B: The puzzle room — 3 noise objects, 1 Stalker patrol
+  - END: Noah's pod after puzzle is solved
+- **Environmental details:** Crumbling rock walls. Bioluminescent particles (cosmetic, faint). Pressure cracks leaking bubbles.
+- **Oxygen challenge:** Should arrive at Noah's pod at ~40% oxygen if played well
+
+### LEVEL 3 — THE ABYSS
+- **Shape:** Wide open cavern — deceptively spacious, but the VOID LEVIATHAN fills it
+- **Key locations:**
+  - ENTRY: Elias receives final comm from both children simultaneously — Liam panicking, Mia humming
+  - CENTER: VOID LEVIATHAN circles the entire cavern slowly. Its path blocks direct routes to both pods.
+  - POD A (LIAM): Left side of cavern. Closer to entry.
+  - POD B (MIA): Right side of cavern. Further. Requires passing near Leviathan.
+  - CHOICE POINT: When Elias reaches one pod, the prompt appears for the final decision.
+- **Oxygen challenge:** Player arrives at approximately 20% oxygen — the choice must be made quickly
+- **Leviathan mechanic:** When Leviathan breathes, it emits a pulse that temporarily disrupts Elias's sonar (all wireframes go dark for 1 second). This happens every 8 seconds.
+
+---
+
+## HUD DESIGN
+
+Display the following on screen at all times during gameplay:
+
+- **TOP LEFT:** "O2" circular gauge (depleting arc, color shifts green → yellow → red)
+- **TOP RIGHT:** "ACOUSTIC SIGNATURE" horizontal bar (0–100, color shifts green → red)
+- **BOTTOM CENTER:** Interaction prompt (appears only near interactable objects): "[E] DOCK" or "[E] COLLECT"
+- **BOTTOM LEFT:** Flare count (starts at 3 per level, icon = small sinking dot)
+- **TOP CENTER:** Level name in retro terminal font, glitching occasionally
+- **Subtitles:** Elias's dialogue appears as white typed text at bottom of screen
+- **Scanlines overlay:** A subtle CSS scanline effect over the entire canvas at all times
+- **Glitch effect:** Every 30–60 seconds, the entire HUD glitches for 0.5 seconds (flicker, offset, static)
+
+---
+
+## COMIC PANEL CUTSCENE SYSTEM
+
+- After each level completes, display a full-screen cutscene.
+- Style: Black background. Panels appear one at a time with a slide-in animation.
+- Each panel: Thick black border, hand-drawn-style artwork (use CSS/Canvas geometric shapes to simulate manga art — bold lines, high contrast, neon ink accents).
+- Dialogue: Types out character by character inside speech bubbles at 40ms per character.
+- Player advances panels by pressing SPACE or clicking.
+- Total panels per cutscene: 4–6 panels.
+- After final panel: Transition to next level with a depth-descent animation (black with descending neon line suggesting a dive).
+
+---
+
+## AUDIO REQUIREMENTS
+
+Use **Howler.js** (load from CDN: https://cdnjs.cloudflare.com/ajax/libs/howler/2.2.3/howler.min.js)
+
+| Sound | Description |
+|---|---|
+| `ocean_ambiance` | Deep, low, oppressive hum. Loops forever. Subtle whale-like resonance. |
+| `sonar_ping_small` | Sharp high-frequency click with echo tail. 0.5s duration. |
+| `sonar_ping_large` | Deeper, wider resonant ping. 1.2s duration with reverb tail. |
+| `enemy_breathe` | INHALE 2s + EXHALE 2s rhythmic loop. Mechanical. Slightly distorted. |
+| `hull_damage` | Deep metallic CLANG + pressure groan. |
+| `oxygen_low` | Rapid beeping alarm. Triggers when O2 < 20%. |
+| `dock_complete` | Soft chime + pressure release hiss. |
+| `flare_deploy` | Soft thunk + water displacement. |
+| `ending_transition` | Enemy breathing sound SMOOTHLY crossfades into hospital EKG + ventilator. |
+| `heartbeat_flatline` | For Ending B — EKG flatline tone. |
+
+**All sounds:** Generate using the Web Audio API oscillators and noise if actual audio files are unavailable. Synthesize them procedurally.
+
+---
+
+## TECHNICAL REQUIREMENTS
+
+- Single `index.html` file
+- Pure HTML5 Canvas + Vanilla JavaScript + Howler.js (CDN)
+- No other frameworks or libraries
+- Game loop using `requestAnimationFrame`
+- State machine for: MENU → LEVEL_1 → CUTSCENE_1 → LEVEL_2 → CUTSCENE_2 → LEVEL_3 → ENDING_A or ENDING_B
+- Collision detection: AABB (Axis-Aligned Bounding Box)
+- Enemy AI: Simple patrol waypoint system with noise detection radius
+- Sonar rendering: Expanding circle + raycasting to determine which wall segments light up
+- Particle system: For wireframe fade-out effect (each lit segment fades over time)
+- Save system: NOT required — game is a single sitting experience
+- Mobile: NOT required — desktop keyboard/mouse only
+
+---
+
+## FINAL INSTRUCTION TO REPLIT AI
+
+Build the complete game in a single `index.html` file. Include every system described above. The game must be fully playable from the main menu through all three levels to both possible endings. Prioritize:
+1. The echolocation visual system working correctly
+2. The Noise Meter and enemy AI responding to sound
+3. The oxygen depletion and HUD
+4. The final choice mechanic and ending sequences
+5. The comic panel cutscene system
+
+Do not skip any system. Do not use placeholder text for story content — use the exact dialogue and story beats written above. The game should feel atmospheric, slow, and psychologically tense. Every design decision should serve the emotional story.

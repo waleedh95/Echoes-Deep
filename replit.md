@@ -1,6 +1,6 @@
-# [Project name]
+# Echoes of the Deep
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+An atmospheric deep-sea exploration / psychological horror / puzzle-survival browser game — pure HTML5 Canvas + Web Audio API, 3 full levels, branching endings.
 
 ## Run & Operate
 
