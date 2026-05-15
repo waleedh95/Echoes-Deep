@@ -1,0 +1,349 @@
+# ECHOES OF THE DEEP — SONAR SHOCKWAVE SYSTEM PROMPT
+
+## TASK
+Upgrade the sonar/echolocation system in Echoes of the Deep to work exactly like the Seamoth sonar in Subnautica. Keep every other system (gameplay, story, enemies, HUD, audio) identical. Only rebuild the sonar rendering mechanic.
+
+---
+
+## REFERENCE — HOW SUBNAUTICA'S SEAMOTH SONAR WORKS
+
+In Subnautica, when you activate the Seamoth sonar:
+- A circular shockwave pulse explodes outward from the submarine in all directions
+- The shockwave is a visible expanding ring/sphere of light
+- As the shockwave ring passes through geometry (cave walls, rocks, creatures, objects), it "paints" those surfaces with a glowing outline exactly where the wave touched them
+- The painted surfaces glow brightly for a moment then slowly fade back to darkness
+- The shockwave does NOT illuminate everything at once — it reveals geometry progressively as the ring sweeps through it
+- Objects closer to the submarine are revealed FIRST, objects further away are revealed LATER as the ring expands
+- The result is a sweeping, cinematic reveal — like dropping a stone in water and watching ripples light up everything they touch
+
+This is NOT a flashlight. This is NOT a flood fill. This is a traveling wave that paints geometry as it passes.
+
+---
+
+## EXACT IMPLEMENTATION INSTRUCTIONS (Three.js)
+
+### STEP 1 — The Shockwave Ring
+
+```javascript
+// When player activates sonar (Left Click):
+
+function fireSonarPing(type) {
+  // type = 'small' or 'large'
+  
+  const ping = {
+    origin: submarine.position.clone(),  // where the ping starts
+    radius: 0,                           // current radius of expanding ring
+    maxRadius: type === 'small' ? 150 : 350,
+    speed: type === 'small' ? 80 : 60,  // units per second
+    thickness: 12,                       // how thick the shockwave ring is (units)
+    active: true,
+    paintedObjects: new Set()            // track what has been revealed
+  };
+  
+  activePings.push(ping);
+}
+```
+
+### STEP 2 — The Shockwave Visual (The Ring Itself)
+
+Create a visible expanding ring that the player can SEE traveling outward:
+
+```javascript
+// Render the shockwave ring as a Three.js torus or expanding sphere shell
+
+// Option A: Torus (2D ring traveling outward in XZ plane — for top-down feel)
+const ringGeometry = new THREE.TorusGeometry(ping.radius, ping.thickness * 0.5, 8, 64);
+
+// Option B: Sphere shell (full 3D shockwave in all directions — PREFERRED, like Subnautica)
+const ringGeometry = new THREE.SphereGeometry(ping.radius, 32, 16);
+const ringMaterial = new THREE.MeshBasicMaterial({
+  color: 0x00FFFF,          // cyan
+  wireframe: true,
+  transparent: true,
+  opacity: Math.max(0, 0.6 - (ping.radius / ping.maxRadius) * 0.6)  // fades as it expands
+});
+
+// The ring gets larger every frame:
+ping.radius += ping.speed * deltaTime;
+
+// Ring fades completely as it reaches max radius
+// Ring disappears when radius >= maxRadius
+```
+
+### STEP 3 — GEOMETRY PAINTING (The Core Effect)
+
+This is the most important part. As the shockwave ring passes through each object, paint that object's wireframe edges:
+
+```javascript
+function updatePingReveal(ping, deltaTime) {
+  
+  // Loop through every object in the scene that can be revealed
+  scene.traverse((object) => {
+    
+    if (!object.isRevealable) return; // skip non-world objects
+    if (ping.paintedObjects.has(object.uuid)) return; // already painted this ping
+    
+    // Get distance from ping origin to this object
+    const dist = object.position.distanceTo(ping.origin);
+    
+    // CHECK: Is the shockwave ring currently passing through this object?
+    // The ring occupies the space between (radius - thickness) and (radius + thickness)
+    const innerEdge = ping.radius - ping.thickness;
+    const outerEdge = ping.radius + ping.thickness;
+    
+    if (dist >= innerEdge && dist <= outerEdge) {
+      
+      // THE SHOCKWAVE IS TOUCHING THIS OBJECT RIGHT NOW
+      // Paint it with a glowing wireframe reveal
+      
+      revealObject(object, ping);
+      ping.paintedObjects.add(object.uuid);
+    }
+  });
+}
+```
+
+### STEP 4 — THE REVEAL EFFECT (Glow + Fade)
+
+When an object is "painted" by the shockwave:
+
+```javascript
+function revealObject(object, ping) {
+  
+  // Each world object has two versions:
+  // 1. Its solid mesh (always hidden, opacity 0)
+  // 2. Its EdgesGeometry wireframe lines (what gets revealed)
+  
+  const wireframe = object.userData.wireframe; // pre-built EdgesGeometry LineSegments
+  
+  if (!wireframe) return;
+  
+  // BURST: Immediately set wireframe to full brightness
+  wireframe.material.opacity = 1.0;
+  wireframe.material.color.setHex(object.userData.revealColor); // cyan, green, red, etc.
+  
+  // Store fade timer on this wireframe
+  wireframe.userData.fadeTimer = object.userData.fadeDuration || 4.0; // seconds
+  wireframe.userData.fading = true;
+  
+  // Add a brief FLASH — extra bright for 0.1 seconds then settle
+  wireframe.material.opacity = 1.5; // over-bright flash (clamped by shader)
+  
+  setTimeout(() => {
+    wireframe.material.opacity = 1.0; // settle to normal bright
+  }, 100);
+}
+
+// In the main update loop — fade all revealed wireframes back to darkness:
+function updateFades(deltaTime) {
+  revealedWireframes.forEach((wireframe) => {
+    if (wireframe.userData.fading) {
+      wireframe.userData.fadeTimer -= deltaTime;
+      
+      // Opacity follows an ease-out curve (stays bright, then drops fast at end)
+      const t = wireframe.userData.fadeTimer / wireframe.userData.totalFadeDuration;
+      wireframe.material.opacity = Math.pow(t, 0.4); // ease-out: bright → dim → gone
+      
+      if (wireframe.userData.fadeTimer <= 0) {
+        wireframe.material.opacity = 0;
+        wireframe.userData.fading = false;
+      }
+    }
+  });
+}
+```
+
+### STEP 5 — MULTIPLE SIMULTANEOUS PINGS
+
+Support multiple pings active at the same time (rapid clicking creates overlapping shockwaves):
+
+```javascript
+// activePings is an array — can hold multiple pings at once
+// Each ping independently expands and paints geometry
+// If two pings hit the same object, the second ping RESETS its fade timer (re-brightens it)
+
+// Update loop:
+activePings.forEach((ping, index) => {
+  ping.radius += ping.speed * deltaTime;
+  updatePingReveal(ping, deltaTime);
+  
+  // Update the visual ring mesh
+  ping.ringMesh.geometry.dispose();
+  ping.ringMesh.geometry = new THREE.SphereGeometry(ping.radius, 32, 16);
+  ping.ringMesh.material.opacity = Math.max(0, 0.5 * (1 - ping.radius / ping.maxRadius));
+  
+  // Remove completed pings
+  if (ping.radius >= ping.maxRadius) {
+    scene.remove(ping.ringMesh);
+    activePings.splice(index, 1);
+  }
+});
+```
+
+---
+
+## VISUAL BEHAVIOR — EXACTLY WHAT THE PLAYER SEES
+
+Describe the exact player experience frame by frame when they fire a sonar ping:
+
+**Frame 0 (Click):**
+- A bright cyan flash bursts from the submarine — like an explosion of light
+- The shockwave ring begins expanding outward in all directions from the submarine
+
+**Frames 1–30 (Ring Traveling):**
+- The ring visibly sweeps outward through the black void
+- As it passes through the cave wall closest to the submarine: those edges FLASH bright cyan
+- As it continues: the next rock formation lights up — then the wreckage — then the far wall
+- Objects close to the submarine were revealed first — objects far away are revealed last
+- The world is revealed progressively, sequentially, like a ripple in water lighting up everything it touches
+- The ring itself fades as it expands (bright near submarine, almost invisible at max range)
+
+**After the Ring Passes:**
+- All revealed wireframes glow brightly then slowly fade over 3–5 seconds
+- The world returns to pure black
+- The player must ping again to see again
+
+**The emotional effect:**
+- The player feels the pulse leave their submarine
+- They watch it travel through the dark
+- Objects emerge from the darkness one by one as the wave reaches them
+- This creates genuine tension — you don't know what's out there until the wave hits it
+
+---
+
+## ENEMY REVEAL BEHAVIOR
+
+When the shockwave ring passes through a Sound-Hunter:
+
+1. The enemy FLASHES bright red as the ring hits it — much brighter than terrain
+2. A distortion ripple effect plays on the enemy's wireframe (vertices jitter for 0.5 seconds)
+3. A red "THREAT DETECTED" billboard label appears above the enemy
+4. The enemy's wireframe fades faster than terrain (1.5 seconds instead of 4) — it's harder to track
+5. The shockwave ring itself WARPS slightly when it passes through an enemy — the ring geometry distorts for 0.3 seconds at the enemy's position, then resumes normal shape
+6. Audio: A harsh metallic screech plays on top of the normal ping sound when an enemy is hit
+
+---
+
+## FLARE BEHAVIOR (Continuous Mini-Shockwaves)
+
+When a flare is dropped:
+- Every 1.5 seconds, a small shockwave pulse emits from the flare's current position
+- These mini-pulses have radius 80 units, speed 60 units/second
+- They are orange (#FF8800) instead of cyan
+- They travel downward faster on the bottom hemisphere (flare is sinking — pulse follows gravity direction)
+- Objects revealed by flare pulses glow orange-tinted instead of cyan
+- The flare also emits a Three.js PointLight (orange, range 60 units) that FILLS IN surfaces between pulses
+
+**Combined effect:** The flare creates a zone of warm orange light with small expanding ripples — like an underwater torch that also sends out sonar waves
+
+---
+
+## BOOST NOISE PING (Passive — While Shift Held)
+
+While the player holds Shift (engine boost):
+- Every 2 seconds automatically, a small shockwave emits from the submarine
+- These are involuntary — the engine noise creates sonar pulses
+- Color: Dim white (#AAAAAA) — less vivid than manual pings
+- They are smaller (radius 100 units) and faster (120 units/second)
+- They also increase the Noise Meter by 8 per automatic pulse
+- Enemy AI reacts to these pulses as if the player pinged
+
+---
+
+## AUDIO SYNC — PING SOUND MATCHES VISUAL
+
+The sonar ping SOUND must sync perfectly with the VISUAL shockwave:
+
+```
+SMALL PING:
+- Sound: Sharp click at frame 0 (when ring starts expanding)
+- Echo: A softer echo sound plays when the ring hits the FAR WALL (when ring radius = distance to nearest far wall)
+- This gives audio feedback that the ping "bounced" off something
+
+LARGE PING:
+- Sound: Deep resonant boom at frame 0
+- Echo: Multiple layered echoes as ring hits different surfaces at different distances
+- Result: Player can hear the shape of the room by the timing of the echoes
+
+ENEMY HIT:
+- Sound: Metallic screech layered on top of normal echo
+- Plays exactly when the ring radius equals the distance to the enemy
+```
+
+---
+
+## SCENE SETUP — HOW TO BUILD REVEALABLE OBJECTS
+
+Every world object must be set up with both a hidden mesh and a wireframe overlay:
+
+```javascript
+function createRevealableObject(geometry, position, revealColor, fadeDuration) {
+  
+  // The solid mesh — hidden, used only for collision
+  const solidMesh = new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ visible: false }));
+  solidMesh.position.copy(position);
+  solidMesh.isRevealable = false; // solid mesh is NOT directly revealed
+  
+  // The wireframe — what gets lit up by the sonar
+  const edges = new THREE.EdgesGeometry(geometry);
+  const wireMaterial = new THREE.LineBasicMaterial({
+    color: revealColor,
+    transparent: true,
+    opacity: 0,              // INVISIBLE by default
+    linewidth: 2,
+    blending: THREE.AdditiveBlending  // makes lines glow/bloom naturally
+  });
+  const wireframe = new THREE.LineSegments(edges, wireMaterial);
+  wireframe.position.copy(position);
+  wireframe.isRevealable = true;    // THIS gets painted by sonar
+  wireframe.userData.revealColor = revealColor;
+  wireframe.userData.fadeDuration = fadeDuration;
+  wireframe.userData.totalFadeDuration = fadeDuration;
+  
+  // Link them
+  solidMesh.userData.wireframe = wireframe;
+  wireframe.userData.solidMesh = solidMesh;
+  
+  scene.add(solidMesh);
+  scene.add(wireframe);
+  
+  return { solidMesh, wireframe };
+}
+
+// USAGE EXAMPLES:
+createRevealableObject(new THREE.BoxGeometry(10,10,10), wallPos, 0x00FFFF, 4.0);      // cave wall
+createRevealableObject(new THREE.CapsuleGeometry(2,6), podPos, 0x00FF88, 5.0);        // lifepod
+createRevealableObject(enemyGeometry, enemyPos, 0xFF3333, 1.5);                        // enemy
+```
+
+---
+
+## PERFORMANCE OPTIMIZATION
+
+```javascript
+// Only check objects within (ping.maxRadius + buffer) of ping origin
+// Use a spatial grid or simple distance pre-filter:
+
+function getObjectsInRange(origin, maxRadius) {
+  return allRevealableObjects.filter(obj => 
+    obj.position.distanceTo(origin) <= maxRadius + 20
+  );
+}
+
+// Only update fading for objects that are currently fading:
+const activeFadeObjects = new Set(); // add on reveal, remove when fully dark
+
+// Cap simultaneous active pings at 5 — oldest ping removed if exceeded
+if (activePings.length > 5) {
+  const oldest = activePings.shift();
+  scene.remove(oldest.ringMesh);
+}
+```
+
+---
+
+## FINAL INSTRUCTION
+
+Implement this sonar shockwave system exactly as described. The player must be able to WATCH the ping wave travel through the darkness and SEE geometry light up sequentially as the wave reaches each object — close objects first, far objects last. This progressive reveal is the entire visual identity of the game. It must feel exactly like the Seamoth sonar in Subnautica: a satisfying, cinematic shockwave that makes the player feel like they are sending a pulse of energy into the unknown and watching the universe respond.
+
+Do not use a simple radius check that reveals everything at once. The wave must TRAVEL. The reveal must be SEQUENTIAL. The fade must be GRADUAL.
