@@ -1,0 +1,101 @@
+Full Game Level Design Prompt
+
+
+Build the full level structure for the game Echoes of the Deep. The player controls Elias, a man in a coma, navigating a dark wireframe ocean in a submarine. His family is dead. He does not know this. He thinks he is rescuing them. He is not. He is finding their bodies.
+
+HOW MEMORY FLASHES WORK — ALL LEVELS:
+Every memory flash is a real photo drawing.
+	- The screen cuts to black first — one full second of silence
+	- Then a real photo fades in slowly — warm, slightly overexposed, like an old family photo
+	- All faces in every photo are motion blurred or turned away — never fully visible
+	- Each photo has a sound attached — ambient real-world audio plays underneath it
+	- The photo holds for 3 to 5 seconds then slowly fades back to black
+	- Then the game world returns
+	- The photos must feel like real memories — imperfect, warm, painfully ordinary.
+
+
+GENERAL RULES FOR ALL LEVELS:
+	- Obstacles like rocks, walls, and debris damage hull integrity on collision
+	- The analog gauge panel at the bottom shows hull, oxygen, sonar, and flares in real time
+	- Sound-Hunters (Leviathans) patrol each level — they hunt by sound
+	- Every life pod contains a body, not a survivor. Vitals are flat. No one is alive.
+	- Face labels on the HUD are always blurred. Elias never sees who they really are.
+
+
+LEVEL 2 — THE WIFE (SARA)
+Environment:
+The ocean here is wide and open but completely dark. The wireframe grid stretches endlessly in every direction. It feels vast and empty — like being lost.
+Obstacles:
+Large rock formations and collapsed underwater structures scattered across the path. Some passages are very narrow, forcing careful steering.
+The Leviathan Encounter:
+One large Sound-Hunter patrols the area directly between Elias and Sara's pod. It moves slowly in wide circles. The player must navigate around it using silence — no large sonar pings. If the player makes too much noise it attacks. The player must pass it completely before the pod location is revealed on the map.
+Finding Sara:
+The pod is resting against a large broken rock wall, tilted on its side. The light inside is almost completely dead — just a faint flicker. When Elias docks:
+	- HUD scans — face is fully blurred — labeled only "Survivor One"
+	- Vitals gauge on the panel: needle does not move. Flatline.
+	- Elias logs: "Survivor recovered." Nothing more.
+
+The Farewell Message:
+Written on the inside of the pod window in dark red — the color of dried blood:
+"Come home, Eli."
+
+The camera holds on the message for three full seconds. Then Elias's voice breaks the silence — he lets out a long, shaking breath that turns into a scream he tries to swallow. His voice cracks. He says nothing. He cannot say anything. The system coldly logs: "Survivor recovered." The scream and the log play at the same time.
+Memory flash:
+A woman laughing on a sunny boat. A hand reaching toward her. Her face is blurred. Cuts to black.
+
+
+LEVEL 3 — FIRST SON (NOAH, AGE 16)
+Environment:
+The ocean narrows here into tight corridors between massive rock formations. The wireframe walls feel closer. The darkness feels heavier. The path is longer than Level 2.
+Obstacles:
+Tight rock corridors, broken walls, and floating debris. More frequent and harder to avoid than before. Hull damage risk is high.
+The Leviathan Encounter:
+Two Sound-Hunters this time. One patrols the entrance corridor. One circles Noah's pod location directly. The player must sneak past the first one, navigate the debris field, then distract or avoid the second one using flares before docking.
+Finding Noah:
+The pod is wedged between two large rocks deep in the corridor, completely upright, as if placed carefully. The light inside is steady but dim. When Elias docks:
+	- HUD scans — face blurred — labeled "Survivor Two"
+	- Vitals gauge: flatline. No movement.
+	- Through the comms a teenage voice says quietly: "Dad? Is that you?"
+	- Elias does not respond. The system logs: "Survivor recovered."
+
+The Farewell Message:
+Written on the inside of the pod window in dark red:
+"Love You Dad."
+
+The camera holds on the message. Then Elias breaks — a short, sharp cry escapes him, like something inside him just snapped. He inhales hard. His voice shakes as he whispers "No... no no no—" then cuts himself off. The scream never fully comes out. It stays trapped inside him. The system logs: "Survivor recovered."
+
+Memory flash:
+A child's crayon drawing of a submarine. The word "DAD" written in big clumsy letters across the side. The image cracks like glass and disappears.
+
+
+LEVEL 4 — SECOND CHILD (MIA, AGE 5)
+Environment:
+The deepest level. The wireframe ocean here begins glitching slightly — lines flickering, geometry breaking apart at the edges. The world feels like it is starting to fall apart. The path is the longest and darkest of all three levels.
+Obstacles:
+Everything from previous levels combined — rocks, walls, debris, and now some floating obstacles that are harder to see in the dark. The analog oxygen gauge is visibly lower at the start of this level — time is running out.
+The Leviathan Encounter:
+Three Sound-Hunters. They move in overlapping patrol patterns making silence extremely difficult. The player has limited flares at this point. This is the hardest stealth section in the game. The player must be patient and precise to pass all three and reach the pod.
+Finding Mia:
+The pod is sitting perfectly still on the ocean floor, completely upright, completely undamaged. It looks almost peaceful — out of place in the broken world around it. A soft, faint sound comes from inside. When Elias gets close the player realizes — the sound is the same lullaby melody that has been playing as background music the entire game. It was always her. When Elias docks:
+	- HUD scans — face blurred — labeled "Survivor Three"
+	- Vitals gauge: flatline. No movement.
+	- No voice. No sound. Just the lullaby, fading slowly.
+	- Elias logs: "Survivor recovered."
+
+The Farewell Message:
+Written on the inside of the pod window in dark red. The letters are uneven and shaky — written by a five year old hand:
+
+"I Will Miss You Dad."
+
+The camera holds on the message longer than all the others. Then Elias screams. Not a short cry. Not a swallowed sound. A full, raw, broken scream that echoes through the submarine. Then silence. Then sobbing. Quiet and small. Like a man who has nothing left. The system logs: "Survivor recovered." The words feel like a cruelty.
+Memory flash:
+A tiny hand drawing a sun on a piece of paper. The crayon is yellow. The hand is very small. The image holds for one extra second longer than the others — then goes dark.
+
+
+AFTER LEVEL 4 — THE COLLAPSE:
+When Elias docks with Mia's pod the ocean begins breaking apart. The wireframe grid dissolves. The darkness turns white. All sound stops except one — the rhythmic mechanical breathing that was always in the background. The ventilator. It was never the ocean. It was never the enemies. It was always the hospital room.
+The screen fades to white. The game ends. The ending sequence begins."
+
+Three messages. Three moments that destroy him.
+Sara said come back. Noah said I believe in you. And Mia — five years old, alone in the dark — just wanted her dad to find her.
+He found them. Ten years too late. And the worst part — he always knew where they were.
