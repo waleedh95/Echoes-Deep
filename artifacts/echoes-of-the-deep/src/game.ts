@@ -2027,6 +2027,7 @@ class EchoesGame {
 
   // Post-processing uniforms that need per-frame updates
   private grainUniforms: { tDiffuse: { value: THREE.Texture | null }; time: { value: number }; intensity: { value: number } } | null = null;
+  private grainIntensity = 0.03; // current (lerped) grain intensity
 
   // Animated headlight cookie — caustic ripple texture that drifts each frame
   private headlightCookie: AnimatedCookie | null = null;
@@ -2159,7 +2160,7 @@ class EchoesGame {
 
     // Film grain — live static noise each frame
     const grainPass = new ShaderPass(FilmGrainShader);
-    grainPass.uniforms.intensity.value = 0.045;
+    grainPass.uniforms.intensity.value = 0.03;
     this.grainUniforms = grainPass.uniforms as typeof this.grainUniforms;
     this.composer.addPass(grainPass);
 
@@ -3682,7 +3683,20 @@ class EchoesGame {
     }
 
     // Update film grain time uniform for live static noise
-    if (this.grainUniforms) this.grainUniforms.time.value = performance.now() / 1000;
+    if (this.grainUniforms) {
+      this.grainUniforms.time.value = performance.now() / 1000;
+
+      // Drive grain intensity from hull / O2 damage state — heavier grain when
+      // things go critically wrong, reinforcing the degraded-camera-feed feel.
+      // At full health: ~0.03 (subtle).  At critical hull (<25%) or O2 (<15%): ~0.10 (heavy).
+      // The lerp provides a smooth ramp; the target itself is a discrete step.
+      const isCritical = this.hullIntegrity < 25 || this.o2 < 15;
+      const targetIntensity = isCritical ? 0.10 : 0.03;
+
+      // Smooth lerp — ~0.05 per frame ≈ 0.3 s half-life at 60 fps
+      this.grainIntensity += (targetIntensity - this.grainIntensity) * 0.05;
+      this.grainUniforms.intensity.value = this.grainIntensity;
+    }
 
     // Animate headlight cookie — redraw caustic ripple every 3 frames to keep cost low
     if (this.headlightCookie) {
