@@ -7,6 +7,8 @@ import * as THREE from "three";
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import * as SkeletonUtils from "three/addons/utils/SkeletonUtils.js";
 
 // ============================================================
 // CONSTANTS
@@ -740,6 +742,23 @@ class EchoesGame {
   private ping3Ds: Ping3D[] = [];
   private flareMeshes: FlareMesh[] = [];
   private particleSystem: THREE.Points | null = null;
+  private leviathanModelPromise: Promise<THREE.Object3D> | null = null;
+  private levelBuildToken = 0; // bumped each build3DScene; async work compares before mutating
+
+  private async getLeviathanModelClone(): Promise<THREE.Object3D> {
+    if (!this.leviathanModelPromise) {
+      const p = new Promise<THREE.Object3D>((resolve, reject) => {
+        const loader = new GLTFLoader();
+        const url = `${import.meta.env.BASE_URL}leviathan.glb`;
+        loader.load(url, (gltf) => resolve(gltf.scene), undefined, (err) => reject(err));
+      });
+      // Self-heal: on failure, clear the cache so a later level entry can retry.
+      p.catch(() => { if (this.leviathanModelPromise === p) this.leviathanModelPromise = null; });
+      this.leviathanModelPromise = p;
+    }
+    const scene = await this.leviathanModelPromise;
+    return SkeletonUtils.clone(scene);
+  }
 
   // Mouse look (camera-relative)
   private yaw = Math.PI;   // start facing into tunnel (+Z)
@@ -975,6 +994,8 @@ class EchoesGame {
   }
 
   private build3DScene(def: LevelData) {
+    // Bump the build token so any in-flight async work from a prior level is ignored.
+    const buildToken = ++this.levelBuildToken;
     // Dispose previous scene content recursively (geometries + materials + textures)
     this.sceneGroup.traverse((obj) => {
       const g = (obj as THREE.Mesh | THREE.LineSegments | THREE.Points | THREE.Sprite).geometry as THREE.BufferGeometry | undefined;
@@ -1008,7 +1029,7 @@ class EchoesGame {
     let pi = 0;
     for (const rect of def.obstacles) {
       const c = wallPalette[pi++ % wallPalette.length];
-      const baseAlpha = 0.12;
+      const baseAlpha = 0; // sonar-only reveal
       const geo = new THREE.BoxGeometry(rect.w * WS, WALL_H, rect.h * WS);
       const edges = new THREE.EdgesGeometry(geo);
       const mat = wireMat(c, baseAlpha);
@@ -1027,14 +1048,14 @@ class EchoesGame {
         const cellW = Math.min(FLOOR_CELL, def.worldW - col * FLOOR_CELL);
         const cellH = Math.min(FLOOR_CELL, def.worldH - row * FLOOR_CELL);
         const { lines, mat } = buildFloorCell(cx, cy, cellW, cellH);
-        mat.opacity = 0.05;
+        mat.opacity = 0;
         this.sceneGroup.add(lines);
-        this.revealObjs.push({ lines, mat, cx, cy, alpha: 0.05, baseAlpha: 0.05 });
+        this.revealObjs.push({ lines, mat, cx, cy, alpha: 0, baseAlpha: 0 });
         if ((col + row) % 2 === 0) {
           const { lines: cl, mat: cm } = buildCeilCell(cx, cy, cellW * 2, cellH * 2);
-          cm.opacity = 0.04;
+          cm.opacity = 0;
           this.sceneGroup.add(cl);
-          this.revealObjs.push({ lines: cl, mat: cm, cx, cy, alpha: 0.04, baseAlpha: 0.04 });
+          this.revealObjs.push({ lines: cl, mat: cm, cx, cy, alpha: 0, baseAlpha: 0 });
         }
       }
     }
@@ -1047,10 +1068,10 @@ class EchoesGame {
       const h = 0.8 + Math.random() * 3;
       const onFloor = Math.random() > 0.5;
       const { lines, mat } = buildStalactite(x3d, z3d, onFloor, h);
-      mat.opacity = 0.09;
+      mat.opacity = 0;
       this.sceneGroup.add(lines);
       const cx2d = x3d / WS, cy2d = z3d / WS;
-      this.revealObjs.push({ lines, mat, cx: cx2d, cy: cy2d, alpha: 0.09, baseAlpha: 0.09 });
+      this.revealObjs.push({ lines, mat, cx: cx2d, cy: cy2d, alpha: 0, baseAlpha: 0 });
     }
 
     // Bioluminescent point lights scattered throughout (always visible — deep ocean)
@@ -1082,8 +1103,34 @@ class EchoesGame {
       let built: { group: THREE.Group; mats: THREE.LineBasicMaterial[] };
       if (enemy.type === "drifter") built = buildDrifterGroup();
       else if (enemy.type === "stalker") built = buildStalkerGroup();
-      else built = buildLeviathanGroup();
-      const labelY = enemy.type === "leviathan" ? 6.5 : 3.4;
+      else {
+        // Leviathan: load FF7 Remake GLB model (fire-and-forget; placeholder until ready)
+        const group = new THREE.Group();
+        built = { group, mats: [] };
+        // Pulsing red rim light so it still reads on sonar
+        const rim = new THREE.PointLight(0xFF3344, 1.4, 30);
+        rim.position.set(0, 4, 0);
+        group.add(rim);
+        this.getLeviathanModelClone().then((model) => {
+          // Stale-load guard: drop the result if a new level has been built since.
+          if (buildToken !== this.levelBuildToken) return;
+          // Auto-fit to a target size, then drop to the floor
+          const box = new THREE.Box3().setFromObject(model);
+          const size = box.getSize(new THREE.Vector3());
+          const maxDim = Math.max(size.x, size.y, size.z) || 1;
+          const targetMax = 14; // big creature
+          const s = targetMax / maxDim;
+          model.scale.setScalar(s);
+          // Recenter horizontally + put feet on ground
+          const center = box.getCenter(new THREE.Vector3()).multiplyScalar(s);
+          model.position.set(-center.x, -box.min.y * s, -center.z);
+          group.add(model);
+        }).catch((err) => {
+          // eslint-disable-next-line no-console
+          console.error("Failed to load leviathan model:", err);
+        });
+      }
+      const labelY = enemy.type === "leviathan" ? 11 : 3.4;
       const label = makeBillboard("THREAT DETECTED", "#FF4444", enemy.type === "leviathan" ? 6.5 : 4.2, enemy.type === "leviathan" ? 1.4 : 1.0);
       label.position.set(0, labelY, 0);
       built.group.add(label);
