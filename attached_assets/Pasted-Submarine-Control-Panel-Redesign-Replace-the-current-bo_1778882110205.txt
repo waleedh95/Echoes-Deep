@@ -1,0 +1,46 @@
+Submarine Control Panel Redesign
+
+Replace the current bottom HUD panel with a new control panel that matches the reference image exactly.
+
+PANEL LAYOUT:
+The panel sits at the very bottom of the screen taking up approximately 20% of the screen height. The player sees the ocean world above it through the submarine viewport window. The panel is dark, physical, and mechanical — not digital.
+
+LEFT SIDE OF PANEL:
+	- A cluster of dark red glowing buttons — rectangular, backlit in deep red
+	- One large circular button or dial above them — darker, with a dim red glow
+	- All buttons look physical and pressable — not flat UI elements
+	- The surface around them is dark matte material — almost black
+
+CENTER OF PANEL:
+	- A radar screen — circular, dark background, with rotating sweep lines in dim green/white
+	- The radar has a square frame around it with corner brackets
+	- It sits slightly raised from the panel surface
+	- The radar shows the sonar sweep in real time — enemies appear as blips when pinged
+
+RIGHT SIDE OF PANEL:
+	- A set of blue glowing rectangular buttons — arranged in two columns
+	- They are smaller than the red buttons on the left
+	- Backlit in cold blue — a strong contrast to the warm red on the left side
+	- Below them another row of wider blue-lit panels or displays
+
+OVERALL PANEL FEEL:
+	- The entire panel surface is dark gunmetal — deep navy to black
+	- The panel has depth and thickness — it looks like real hardware, not a flat image
+	- There is a slight curve to the panel following the shape of the cockpit
+	- Subtle wear and scratches on the surface
+	- The viewport window above the panel is rounded — like looking through a real submarine porthole frame
+
+
+COLORS:
+	- Panel base: near black, dark navy
+	- Left controls: deep red glow
+	- Center radar: dim green and white sweep
+	- Right controls: cold blue glow
+	- No bright colors — everything is dark, moody, and functional
+
+
+IMPORTANT:
+	- This panel replaces the previous analog gauge concept entirely
+	- Keep the ocean wireframe world above completely unchanged
+	- The panel should match the reference image provided as closely as possible in layout, color, and feel
+	- All gameplay functions — sonar, flares, hull, oxygen — are represented through this panel visually"**
