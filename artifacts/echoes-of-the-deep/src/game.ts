@@ -210,7 +210,7 @@ interface LevelData {
 }
 interface CutscenePanel { text: string; speaker: string; art: string; badge?: string }
 
-type GameState = "MENU" | "PLAYING" | "CUTSCENE" | "CHOICE" | "ENDING_A" | "ENDING_B" | "GAME_OVER";
+type GameState = "MENU" | "PLAYING" | "CUTSCENE" | "CHOICE" | "ENDING_A" | "ENDING_B" | "GAME_OVER" | "LEVEL_TRANSITION";
 
 // ============================================================
 // AUDIO
@@ -1697,6 +1697,12 @@ class EchoesGame {
   private hullBezelFlash = 0;    // ms countdown — orange/red glow on hull hit
   private o2BezelPhase = 0;      // accumulated radians for O2 critical sine pulse
 
+  // Level transition
+  private transitionTargetLvl = 0;
+  private transitionStartMs = 0;
+  private transitionDurationMs = 3400;
+  private transitionCallback: (() => void) | null = null;
+
   // RAF
   private rafId = 0; private lastT = 0;
 
@@ -2145,8 +2151,15 @@ class EchoesGame {
   }
 
   private completeLevel() {
-    if (this.lvlIdx === 0) this.startCS(CS1, () => this.loadLevel(1));
-    else if (this.lvlIdx === 1) this.startCS(CS2, () => this.loadLevel(2));
+    if (this.lvlIdx === 0) this.startCS(CS1, () => this.showLevelTransition(1, () => this.loadLevel(1)));
+    else if (this.lvlIdx === 1) this.startCS(CS2, () => this.showLevelTransition(2, () => this.loadLevel(2)));
+  }
+
+  private showLevelTransition(nextIdx: number, cb: () => void) {
+    this.transitionTargetLvl = nextIdx;
+    this.transitionStartMs = Date.now();
+    this.transitionCallback = cb;
+    this.state = "LEVEL_TRANSITION";
   }
 
   private makeChoice(c: "A" | "B" | "BOTH") {
@@ -2203,6 +2216,15 @@ class EchoesGame {
     if (this.state === "MENU" || this.state === "GAME_OVER") return;
     if (isCS) { this.updateCS(dt); return; }
     if (this.state === "CHOICE") { this.updatePings3D(dt); return; }
+    if (this.state === "LEVEL_TRANSITION") {
+      const elapsed = Date.now() - this.transitionStartMs;
+      if (elapsed >= this.transitionDurationMs && this.transitionCallback) {
+        const cb = this.transitionCallback;
+        this.transitionCallback = null;
+        cb();
+      }
+      return;
+    }
     if (this.state !== "PLAYING") return;
 
     this.lvlTime += dt / 1000;
@@ -3119,6 +3141,11 @@ class EchoesGame {
       this.renderGameOver();
       return;
     }
+    if (this.state === "LEVEL_TRANSITION") {
+      this.renderer.render(this.scene, this.camera);
+      this.renderLevelTransition();
+      return;
+    }
 
     // Update camera from 2D position + buoyancy Y drift + roll/pitch offsets
     const buoyancyY = BUOY_AMP * Math.sin(BUOY_FREQ * this.lvlTime);
@@ -3456,56 +3483,408 @@ class EchoesGame {
   }
 
   // ============================================================
-  // MENU (on HUD canvas)
+  // MENU (on HUD canvas) — cockpit aesthetic
   // ============================================================
   private renderMenu() {
-    const ctx = this.hudCtx; const t = Date.now() / 1000;
-    const g = ctx.createRadialGradient(GAME_W/2, GAME_H/2, 0, GAME_W/2, GAME_H/2, 640);
-    g.addColorStop(0, "rgba(0,5,32,0.92)"); g.addColorStop(1, "rgba(0,0,0,0.98)");
-    ctx.fillStyle = g; ctx.fillRect(0, 0, GAME_W, GAME_H);
-    for (let i = 0; i < 6; i++) {
-      const wy = 170 + i*90 + Math.sin(t*0.28+i)*10;
-      ctx.strokeStyle = `rgba(0,80,200,${0.14+i*0.02})`; ctx.lineWidth = 1;
+    const ctx = this.hudCtx;
+    const t = Date.now() / 1000;
+
+    // ── Deep-sea background ──
+    const bg = ctx.createRadialGradient(GAME_W/2, GAME_H*0.42, 0, GAME_W/2, GAME_H*0.42, 720);
+    bg.addColorStop(0,   'rgba(0,8,28,0.96)');
+    bg.addColorStop(0.5, 'rgba(0,4,16,0.98)');
+    bg.addColorStop(1,   'rgba(0,0,6,1.00)');
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, GAME_W, GAME_H);
+
+    // Animated deep-sea current lines
+    for (let i = 0; i < 7; i++) {
+      const wy = 120 + i * 82 + Math.sin(t * 0.22 + i * 1.1) * 12;
+      const alpha = 0.06 + i * 0.012;
+      ctx.strokeStyle = `rgba(0,60,160,${alpha})`; ctx.lineWidth = 1.2;
       ctx.beginPath(); ctx.moveTo(0, wy);
-      for (let wx = 0; wx <= GAME_W; wx += 28) ctx.lineTo(wx, wy + Math.sin(wx/110+t*0.45+i)*20);
+      for (let wx = 0; wx <= GAME_W; wx += 32)
+        ctx.lineTo(wx, wy + Math.sin(wx / 120 + t * 0.38 + i) * 18 + Math.sin(wx / 60 + t * 0.15) * 6);
       ctx.stroke();
     }
-    const pr = ((t*72) % 320)+40;
-    ctx.strokeStyle = `rgba(0,255,255,${Math.max(0,0.22-pr/370)})`; ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.arc(GAME_W/2, GAME_H/2-70, pr, 0, Math.PI*2); ctx.stroke();
-    ctx.shadowColor = "#00FFFF"; ctx.shadowBlur = 34;
-    ctx.fillStyle = "#00FFFF"; ctx.font = "bold 66px monospace"; ctx.textAlign = "center";
-    ctx.fillText("ECHOES", GAME_W/2, GAME_H/2-82);
-    ctx.fillStyle = "rgba(0,200,255,0.72)"; ctx.font = "bold 28px monospace";
-    ctx.fillText("OF THE DEEP", GAME_W/2, GAME_H/2-30); ctx.shadowBlur = 0;
-    ctx.fillStyle = "rgba(0,200,200,0.5)"; ctx.font = "12px monospace";
-    ctx.fillText("Deep-Sea Exploration  ·  Psychological Horror  ·  Puzzle-Survival", GAME_W/2, GAME_H/2+10);
-    if (Math.sin(t*2.2) > 0) {
-      ctx.fillStyle = "rgba(0,255,136,0.88)"; ctx.font = "15px monospace";
-      ctx.fillText("[ PRESS SPACE OR CLICK TO BEGIN ]", GAME_W/2, GAME_H/2+68);
+
+    // Expanding sonar ring from center
+    const pr = ((t * 68) % 340) + 30;
+    const ringA = Math.max(0, 0.28 - pr / 380);
+    ctx.strokeStyle = `rgba(0,220,255,${ringA})`; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(GAME_W/2, GAME_H * 0.42, pr, 0, Math.PI * 2); ctx.stroke();
+    const pr2 = ((t * 68 + 170) % 340) + 30;
+    const ringA2 = Math.max(0, 0.14 - pr2 / 380);
+    ctx.strokeStyle = `rgba(0,180,255,${ringA2})`; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(GAME_W/2, GAME_H * 0.42, pr2, 0, Math.PI * 2); ctx.stroke();
+
+    // ── Title ──
+    const titleY = GAME_H * 0.36;
+    ctx.textAlign = 'center';
+    // Outer glow
+    ctx.shadowColor = '#004488'; ctx.shadowBlur = 60;
+    ctx.fillStyle = '#001833'; ctx.font = 'bold 68px monospace';
+    ctx.fillText('ECHOES OF THE DEEP', GAME_W/2, titleY);
+    ctx.shadowBlur = 0;
+    // Main title — cyan with fine amber underline
+    ctx.shadowColor = '#00CCFF'; ctx.shadowBlur = 28;
+    ctx.fillStyle = '#00E8FF'; ctx.font = 'bold 68px monospace';
+    ctx.fillText('ECHOES OF THE DEEP', GAME_W/2, titleY);
+    ctx.shadowBlur = 0;
+    // Brass underline rule
+    const lineW = 620;
+    const grad = ctx.createLinearGradient(GAME_W/2 - lineW/2, 0, GAME_W/2 + lineW/2, 0);
+    grad.addColorStop(0,    'rgba(100,80,40,0)');
+    grad.addColorStop(0.15, 'rgba(160,130,70,0.85)');
+    grad.addColorStop(0.5,  'rgba(200,168,80,0.95)');
+    grad.addColorStop(0.85, 'rgba(160,130,70,0.85)');
+    grad.addColorStop(1,    'rgba(100,80,40,0)');
+    ctx.strokeStyle = grad; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.moveTo(GAME_W/2 - lineW/2, titleY + 11); ctx.lineTo(GAME_W/2 + lineW/2, titleY + 11); ctx.stroke();
+
+    // Sub-heading
+    ctx.fillStyle = 'rgba(140,190,220,0.55)'; ctx.font = '14px monospace';
+    ctx.fillText('DEEP-SEA EXPLORATION  ·  PSYCHOLOGICAL HORROR  ·  PUZZLE-SURVIVAL', GAME_W/2, titleY + 32);
+
+    // ── Bottom cockpit panel ──
+    const PANEL_Y = Math.floor(GAME_H * 0.64);
+    const PANEL_H = GAME_H - PANEL_Y;
+
+    // Trapezoid clip — same as the gameplay dashboard
+    ctx.save();
+    const TAPER = 10;
+    ctx.beginPath();
+    ctx.moveTo(TAPER, PANEL_Y); ctx.lineTo(GAME_W - TAPER, PANEL_Y);
+    ctx.lineTo(GAME_W, GAME_H); ctx.lineTo(0, GAME_H);
+    ctx.closePath(); ctx.clip();
+    ctx.transform(1, 0, 0.012, 1, -PANEL_Y * 0.012, 0);
+
+    // Panel base — aged gunmetal
+    const baseGrad = ctx.createLinearGradient(0, PANEL_Y, 0, GAME_H);
+    baseGrad.addColorStop(0,   '#1e2528');
+    baseGrad.addColorStop(0.3, '#181e20');
+    baseGrad.addColorStop(0.7, '#12171a');
+    baseGrad.addColorStop(1,   '#0b0e0f');
+    ctx.fillStyle = baseGrad; ctx.fillRect(0, PANEL_Y, GAME_W, PANEL_H);
+
+    // Metal grain lines
+    for (let i = 0; i < 5; i++) {
+      const by = PANEL_Y + 12 + i * 30;
+      ctx.strokeStyle = `rgba(255,255,255,${0.009 + i * 0.003})`; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(0, by); ctx.lineTo(GAME_W, by); ctx.stroke();
     }
-    ctx.fillStyle = "rgba(255,255,255,0.28)"; ctx.font = "11px monospace";
-    const ctrls = ["WASD — MOVE (W=forward, S=back, A=left, D=right)    SHIFT — BOOST",
-      "CLICK — sonar ping    HOLD 1s — large ping    F — flare",
-      "E — interact / dock    MOUSE — look around (voice acting on)",];
-    ctrls.forEach((c,i) => ctx.fillText(c, GAME_W/2, GAME_H/2+118+i*19));
+
+    // Side vignettes
+    const vigL = ctx.createLinearGradient(0, PANEL_Y, 80, PANEL_Y);
+    vigL.addColorStop(0, 'rgba(0,0,0,0.55)'); vigL.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = vigL; ctx.fillRect(0, PANEL_Y, 80, PANEL_H);
+    const vigR = ctx.createLinearGradient(GAME_W-80, PANEL_Y, GAME_W, PANEL_Y);
+    vigR.addColorStop(0, 'rgba(0,0,0,0)'); vigR.addColorStop(1, 'rgba(0,0,0,0.55)');
+    ctx.fillStyle = vigR; ctx.fillRect(GAME_W-80, PANEL_Y, 80, PANEL_H);
+
+    // Top edge highlight (worn brass)
+    const edgeH = ctx.createLinearGradient(0, PANEL_Y, 0, PANEL_Y + 7);
+    edgeH.addColorStop(0, 'rgba(140,120,80,0.82)'); edgeH.addColorStop(1, 'rgba(50,42,28,0)');
+    ctx.fillStyle = edgeH; ctx.fillRect(0, PANEL_Y, GAME_W, 7);
+    ctx.strokeStyle = 'rgba(80,68,44,0.55)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, PANEL_Y + 7); ctx.lineTo(GAME_W, PANEL_Y + 7); ctx.stroke();
+
+    // Rivets along top edge
+    const rivetY = PANEL_Y + 4;
+    for (let rx = 28; rx < GAME_W - 20; rx += 54) {
+      const rg = ctx.createRadialGradient(rx-1, rivetY-1, 0, rx, rivetY, 5);
+      rg.addColorStop(0, 'rgba(200,175,120,0.88)'); rg.addColorStop(0.45, 'rgba(105,90,58,0.65)');
+      rg.addColorStop(1, 'rgba(30,25,15,0)');
+      ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(rx, rivetY, 4, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = 'rgba(0,0,0,0.32)';
+      ctx.beginPath(); ctx.ellipse(rx, rivetY+3, 3, 1.2, 0, 0, Math.PI*2); ctx.fill();
+    }
+
+    // Panel content — blinking prompt + controls
+    const CY = PANEL_Y + 30;
+
+    if (Math.sin(t * 2.4) > 0) {
+      ctx.shadowColor = '#00FF88'; ctx.shadowBlur = 14;
+      ctx.fillStyle = 'rgba(0,255,136,0.92)'; ctx.font = 'bold 17px monospace'; ctx.textAlign = 'center';
+      ctx.fillText('[ PRESS SPACE OR CLICK TO BEGIN ]', GAME_W/2, CY + 4);
+      ctx.shadowBlur = 0;
+    }
+
+    ctx.fillStyle = 'rgba(160,148,100,0.48)'; ctx.font = '10px monospace'; ctx.textAlign = 'center';
+    const ctrls = [
+      'WASD — MOVE    SHIFT — BOOST    MOUSE — LOOK AROUND',
+      'CLICK — SONAR PING    HOLD 1s — LARGE PING    F — FLARE    E — DOCK',
+    ];
+    ctrls.forEach((c, i) => ctx.fillText(c, GAME_W/2, CY + 30 + i * 16));
+
+    // Credits line — bottom-right of panel
+    ctx.fillStyle = 'rgba(120,106,70,0.38)'; ctx.font = '9px monospace'; ctx.textAlign = 'right';
+    ctx.fillText('SUBSEA INTERACTIVE  ·  ECHOES OF THE DEEP  ·  V1.0', GAME_W - 22, GAME_H - 10);
+
+    ctx.restore();
   }
 
   // ============================================================
-  // GAME OVER (on HUD canvas)
+  // GAME OVER (on HUD canvas) — cockpit aesthetic
   // ============================================================
   private renderGameOver() {
     const ctx = this.hudCtx;
-    ctx.fillStyle = "rgba(0,0,0,0.95)"; ctx.fillRect(0, 0, GAME_W, GAME_H);
-    ctx.fillStyle = "#FF3333"; ctx.shadowColor = "#FF3333"; ctx.shadowBlur = 22;
-    ctx.font = "bold 46px monospace"; ctx.textAlign = "center";
-    ctx.fillText("OXYGEN DEPLETED", GAME_W/2, GAME_H/2-36); ctx.shadowBlur = 0;
-    ctx.fillStyle = "rgba(0,200,255,0.55)"; ctx.font = "15px monospace";
-    ctx.fillText('"I\'m sorry..."', GAME_W/2, GAME_H/2+10);
-    if (Math.sin(Date.now()/500) > 0) {
-      ctx.fillStyle = "rgba(255,255,255,0.58)"; ctx.font = "14px monospace";
-      ctx.fillText("[ PRESS SPACE TO RETRY ]", GAME_W/2, GAME_H/2+60);
+    const t = Date.now() / 1000;
+
+    // Full-screen near-black overlay
+    ctx.fillStyle = 'rgba(0,0,0,0.95)'; ctx.fillRect(0, 0, GAME_W, GAME_H);
+
+    // Faint horizontal scan lines
+    for (let sy = 0; sy < GAME_H; sy += 4) {
+      ctx.fillStyle = 'rgba(255,0,0,0.018)';
+      ctx.fillRect(0, sy, GAME_W, 2);
     }
+
+    // ── Central cockpit-bezel card ──
+    const CW = 580, CH = 220;
+    const CX = GAME_W/2 - CW/2, CY = GAME_H/2 - CH/2 - 20;
+
+    // Card shadow
+    ctx.fillStyle = 'rgba(180,0,0,0.12)';
+    ctx.fillRect(CX + 6, CY + 8, CW, CH);
+
+    // Card base — same aged gunmetal as dashboard
+    const baseGrad = ctx.createLinearGradient(CX, CY, CX, CY + CH);
+    baseGrad.addColorStop(0,   '#23282a');
+    baseGrad.addColorStop(0.4, '#1a1e20');
+    baseGrad.addColorStop(1,   '#0e1112');
+    ctx.fillStyle = baseGrad; ctx.fillRect(CX, CY, CW, CH);
+
+    // Inner bevel highlight
+    ctx.strokeStyle = 'rgba(200,0,0,0.45)'; ctx.lineWidth = 2;
+    ctx.strokeRect(CX + 1, CY + 1, CW - 2, CH - 2);
+    ctx.strokeStyle = 'rgba(80,0,0,0.6)'; ctx.lineWidth = 1;
+    ctx.strokeRect(CX + 4, CY + 4, CW - 8, CH - 8);
+
+    // Top edge — brass-red highlight
+    const edgeGrad = ctx.createLinearGradient(CX, CY, CX, CY + 6);
+    edgeGrad.addColorStop(0, 'rgba(180,60,40,0.75)'); edgeGrad.addColorStop(1, 'rgba(60,20,10,0)');
+    ctx.fillStyle = edgeGrad; ctx.fillRect(CX, CY, CW, 6);
+
+    // Rivets — top edge
+    const rivetY = CY + 4;
+    for (let rx = CX + 18; rx < CX + CW - 10; rx += 40) {
+      const rg = ctx.createRadialGradient(rx-1, rivetY-1, 0, rx, rivetY, 4);
+      rg.addColorStop(0, 'rgba(200,120,100,0.85)'); rg.addColorStop(0.5, 'rgba(100,50,40,0.6)');
+      rg.addColorStop(1, 'rgba(30,10,10,0)');
+      ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(rx, rivetY, 3.5, 0, Math.PI*2); ctx.fill();
+    }
+
+    // Card content
+    ctx.textAlign = 'center';
+    // Header label
+    ctx.fillStyle = 'rgba(160,148,100,0.55)'; ctx.font = '10px monospace';
+    ctx.fillText('ALERT  ·  SUBSYSTEM FAILURE  ·  ALERT', GAME_W/2, CY + 24);
+    // Thin separator
+    ctx.strokeStyle = 'rgba(160,50,40,0.38)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(CX + 24, CY + 30); ctx.lineTo(CX + CW - 24, CY + 30); ctx.stroke();
+
+    // Main title — red glow
+    ctx.shadowColor = '#FF2200'; ctx.shadowBlur = 30;
+    ctx.fillStyle = '#FF3322'; ctx.font = 'bold 44px monospace';
+    ctx.fillText('OXYGEN DEPLETED', GAME_W/2, CY + 82);
+    ctx.shadowBlur = 0;
+
+    // Quote
+    ctx.fillStyle = 'rgba(100,180,220,0.55)'; ctx.font = 'italic 15px monospace';
+    ctx.fillText('"I\'m sorry..."', GAME_W/2, CY + 116);
+
+    // Thin separator
+    ctx.strokeStyle = 'rgba(80,60,40,0.35)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(CX + 24, CY + 132); ctx.lineTo(CX + CW - 24, CY + 132); ctx.stroke();
+
+    // Blinking retry prompt
+    if (Math.sin(t * 2.5) > 0) {
+      ctx.shadowColor = '#00CC88'; ctx.shadowBlur = 12;
+      ctx.fillStyle = 'rgba(0,200,130,0.88)'; ctx.font = 'bold 14px monospace';
+      ctx.fillText('[ PRESS SPACE TO RETRY ]', GAME_W/2, CY + 158);
+      ctx.shadowBlur = 0;
+    }
+
+    // Level indicator at bottom of card
+    ctx.fillStyle = 'rgba(120,108,72,0.38)'; ctx.font = '9px monospace';
+    ctx.fillText(`SECTOR ${['ALPHA','BETA','GAMMA'][this.lvlIdx] ?? 'UNKNOWN'}  ·  DEPTH ${[20,55,82][this.lvlIdx] ?? 0}m`, GAME_W/2, CY + CH - 10);
+  }
+
+  // ============================================================
+  // LEVEL TRANSITION (on HUD canvas) — cockpit aesthetic
+  // ============================================================
+  private renderLevelTransition() {
+    const ctx = this.hudCtx;
+    const elapsed = Date.now() - this.transitionStartMs;
+    const progress = Math.min(1, elapsed / this.transitionDurationMs); // 0→1 over full duration
+
+    // Fade-in 0→0.25 / hold / fade-out 0.82→1
+    let alpha = 1;
+    if (progress < 0.12) alpha = progress / 0.12;
+    else if (progress > 0.84) alpha = 1 - (progress - 0.84) / 0.16;
+    alpha = Math.max(0, Math.min(1, alpha));
+
+    // ── Full-screen deep-sea background ──
+    ctx.globalAlpha = alpha;
+    const bg = ctx.createRadialGradient(GAME_W/2, GAME_H*0.45, 0, GAME_W/2, GAME_H*0.45, 700);
+    bg.addColorStop(0,   'rgba(0,6,22,0.97)');
+    bg.addColorStop(0.55,'rgba(0,3,12,0.99)');
+    bg.addColorStop(1,   'rgba(0,0,5,1.00)');
+    ctx.fillStyle = bg; ctx.fillRect(0, 0, GAME_W, GAME_H);
+
+    // Slow-drift current lines
+    const tSec = Date.now() / 1000;
+    for (let i = 0; i < 5; i++) {
+      const wy = 80 + i * 110 + Math.sin(tSec * 0.18 + i * 1.4) * 8;
+      ctx.strokeStyle = `rgba(0,50,140,${0.05 + i * 0.008})`; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(0, wy);
+      for (let wx = 0; wx <= GAME_W; wx += 36)
+        ctx.lineTo(wx, wy + Math.sin(wx / 130 + tSec * 0.28 + i) * 14);
+      ctx.stroke();
+    }
+
+    // ── Central card ──
+    const CW = 640, CH = 260;
+    const CX = GAME_W/2 - CW/2, CY = GAME_H/2 - CH/2;
+
+    // Card shadow
+    ctx.fillStyle = 'rgba(0,120,200,0.10)';
+    ctx.fillRect(CX + 8, CY + 10, CW, CH);
+
+    // Card base — aged gunmetal aluminum
+    const baseGrad = ctx.createLinearGradient(CX, CY, CX, CY + CH);
+    baseGrad.addColorStop(0,   '#22292c');
+    baseGrad.addColorStop(0.3, '#1a2022');
+    baseGrad.addColorStop(0.7, '#14191a');
+    baseGrad.addColorStop(1,   '#0d1011');
+    ctx.fillStyle = baseGrad; ctx.fillRect(CX, CY, CW, CH);
+
+    // Metal grain lines
+    for (let i = 0; i < 4; i++) {
+      const by = CY + 16 + i * 34;
+      ctx.strokeStyle = `rgba(255,255,255,${0.008 + i * 0.003})`; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(CX, by); ctx.lineTo(CX + CW, by); ctx.stroke();
+    }
+
+    // Outer bezel — double bevel
+    ctx.strokeStyle = 'rgba(0,160,220,0.55)'; ctx.lineWidth = 2;
+    ctx.strokeRect(CX + 1, CY + 1, CW - 2, CH - 2);
+    ctx.strokeStyle = 'rgba(0,60,100,0.4)'; ctx.lineWidth = 1;
+    ctx.strokeRect(CX + 5, CY + 5, CW - 10, CH - 10);
+
+    // Top edge — worn brass highlight
+    const edgeGrad = ctx.createLinearGradient(CX, CY, CX, CY + 7);
+    edgeGrad.addColorStop(0, 'rgba(140,122,78,0.88)'); edgeGrad.addColorStop(1, 'rgba(50,44,26,0)');
+    ctx.fillStyle = edgeGrad; ctx.fillRect(CX, CY, CW, 7);
+    ctx.strokeStyle = 'rgba(80,70,46,0.55)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(CX, CY + 7); ctx.lineTo(CX + CW, CY + 7); ctx.stroke();
+
+    // Rivets — top edge
+    const rivetY = CY + 4;
+    for (let rx = CX + 20; rx < CX + CW - 12; rx += 48) {
+      const rg = ctx.createRadialGradient(rx-1, rivetY-1, 0, rx, rivetY, 4.5);
+      rg.addColorStop(0, 'rgba(200,178,128,0.88)'); rg.addColorStop(0.45, 'rgba(110,92,62,0.65)');
+      rg.addColorStop(1, 'rgba(30,25,14,0)');
+      ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(rx, rivetY, 4, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = 'rgba(0,0,0,0.36)';
+      ctx.beginPath(); ctx.ellipse(rx, rivetY+3, 3.2, 1.3, 0, 0, Math.PI*2); ctx.fill();
+    }
+
+    // ── Card content ──
+    ctx.textAlign = 'center';
+
+    // Header label row
+    ctx.fillStyle = 'rgba(155,142,100,0.55)'; ctx.font = '10px monospace';
+    ctx.fillText('NAVIGATION  ·  DEPTH CONTROL  ·  NAVIGATION', GAME_W/2, CY + 23);
+    ctx.strokeStyle = 'rgba(80,70,46,0.35)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(CX + 20, CY + 29); ctx.lineTo(CX + CW - 20, CY + 29); ctx.stroke();
+
+    // "DEPTH INCREASING" alert
+    const lvlNames = ['LEVEL I — THE DESCENT', 'LEVEL II — THE PRESSURE ZONE', 'LEVEL III — THE ABYSS'];
+    const depthVals = [20, 55, 82];
+    const lvlLabel = lvlNames[this.transitionTargetLvl] ?? `LEVEL ${this.transitionTargetLvl + 1}`;
+    const targetDepth = depthVals[this.transitionTargetLvl] ?? 0;
+
+    ctx.shadowColor = '#00AAFF'; ctx.shadowBlur = 20;
+    ctx.fillStyle = '#88CCFF'; ctx.font = 'bold 13px monospace';
+    ctx.fillText('DEPTH INCREASING', GAME_W/2, CY + 56);
+    ctx.shadowBlur = 0;
+
+    // Level name — large, cyan
+    ctx.shadowColor = '#00CCFF'; ctx.shadowBlur = 26;
+    ctx.fillStyle = '#00E0FF'; ctx.font = 'bold 32px monospace';
+    ctx.fillText(lvlLabel, GAME_W/2, CY + 98);
+    ctx.shadowBlur = 0;
+
+    // Thin separator
+    ctx.strokeStyle = 'rgba(0,120,180,0.28)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(CX + 40, CY + 110); ctx.lineTo(CX + CW - 40, CY + 110); ctx.stroke();
+
+    // ── Analog depth gauge sweep ──
+    // Needle sweeps from 0 to targetDepth over the first 70% of transition
+    const sweepProgress = Math.min(1, progress / 0.70);
+    // Ease-out: fast then slow
+    const easedSweep = 1 - Math.pow(1 - sweepProgress, 2.5);
+    const displayDepth = Math.round(easedSweep * targetDepth);
+
+    const GCX = GAME_W/2, GCY = CY + 168, GR = 38;
+    const G_START = Math.PI * 0.72;   // ~130° — left side
+    const G_SWEEP = Math.PI * 1.56;   // ~280° sweep arc
+
+    // Gauge background track
+    ctx.strokeStyle = 'rgba(255,255,255,0.07)'; ctx.lineWidth = 3.5;
+    ctx.beginPath(); ctx.arc(GCX, GCY, GR - 5, G_START, G_START + G_SWEEP); ctx.stroke();
+
+    // Depth colour: green → yellow → blue-white at depth
+    const dNorm = displayDepth / 100;
+    const gaugeColor = dNorm < 0.5 ? '#00FF88' : dNorm < 0.8 ? '#FFD700' : '#00CCFF';
+
+    // Filled arc up to current value
+    if (easedSweep > 0.005) {
+      ctx.strokeStyle = gaugeColor; ctx.shadowColor = gaugeColor; ctx.shadowBlur = 8;
+      ctx.lineWidth = 3;
+      ctx.beginPath(); ctx.arc(GCX, GCY, GR - 5, G_START, G_START + easedSweep * G_SWEEP); ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
+
+    // Tick marks (5 ticks)
+    for (let ti = 0; ti <= 4; ti++) {
+      const ta = G_START + (ti / 4) * G_SWEEP;
+      const tLen = ti === 0 || ti === 4 || ti === 2 ? 6 : 4;
+      ctx.strokeStyle = 'rgba(155,142,100,0.55)'; ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(GCX + Math.cos(ta) * (GR - 1), GCY + Math.sin(ta) * (GR - 1));
+      ctx.lineTo(GCX + Math.cos(ta) * (GR - 1 - tLen), GCY + Math.sin(ta) * (GR - 1 - tLen));
+      ctx.stroke();
+    }
+
+    // Needle
+    const needleAngle = G_START + easedSweep * G_SWEEP;
+    ctx.strokeStyle = gaugeColor; ctx.shadowColor = gaugeColor; ctx.shadowBlur = 6;
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.moveTo(GCX - Math.cos(needleAngle) * (GR * 0.22), GCY - Math.sin(needleAngle) * (GR * 0.22));
+    ctx.lineTo(GCX + Math.cos(needleAngle) * (GR - 8), GCY + Math.sin(needleAngle) * (GR - 8));
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+
+    // Center hub
+    ctx.fillStyle = '#3a3010'; ctx.beginPath(); ctx.arc(GCX, GCY, 4, 0, Math.PI*2); ctx.fill();
+    ctx.fillStyle = 'rgba(200,168,75,0.7)'; ctx.beginPath(); ctx.arc(GCX-0.8, GCY-0.8, 1.4, 0, Math.PI*2); ctx.fill();
+
+    // Depth readout
+    ctx.fillStyle = gaugeColor; ctx.font = 'bold 13px monospace'; ctx.textAlign = 'center';
+    ctx.fillText(`${displayDepth}m`, GCX, GCY + GR + 14);
+    ctx.fillStyle = 'rgba(155,142,100,0.55)'; ctx.font = '8px monospace';
+    ctx.fillText('DEPTH', GCX, GCY + GR + 24);
+
+    // Bottom credits bar
+    ctx.strokeStyle = 'rgba(80,70,46,0.32)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(CX + 20, CY + CH - 20); ctx.lineTo(CX + CW - 20, CY + CH - 20); ctx.stroke();
+    ctx.fillStyle = 'rgba(120,108,70,0.36)'; ctx.font = '9px monospace';
+    ctx.fillText('HULL PRESSURE NOMINAL  ·  LIFE SUPPORT STABLE  ·  PROCEEDING', GAME_W/2, CY + CH - 8);
+
+    ctx.globalAlpha = 1;
   }
 
   // ============================================================
