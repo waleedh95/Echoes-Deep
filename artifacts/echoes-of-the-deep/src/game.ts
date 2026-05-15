@@ -172,6 +172,74 @@ const CAM_PITCH_RETURN = 3.5;      // pitch lerp-back rate (per second)
 const BUOY_FREQ = 0.4;             // buoyancy sine frequency (rad/s)
 const BUOY_AMP = 0.038;            // buoyancy Y amplitude (Three.js units)
 
+// ─── SONAR OVERLAY SHADERS ───────────────────────────────────────────────────
+// Projects a glowing world-space grid onto all terrain surfaces as the
+// sonar ring sweeps through them — pure Subnautica-style depth scan.
+const SONAR_VERT = /* glsl */`
+  varying vec3 vWorldPos;
+  void main() {
+    vec4 wp = modelMatrix * vec4(position, 1.0);
+    vWorldPos = wp.xyz;
+    gl_Position = projectionMatrix * viewMatrix * wp;
+  }
+`;
+const SONAR_FRAG = /* glsl */`
+  #define MAX_PINGS 5
+  uniform vec3  uPingOrigin[MAX_PINGS];
+  uniform float uPingRadius[MAX_PINGS];
+  uniform float uPingOpacity[MAX_PINGS];
+  varying vec3  vWorldPos;
+
+  void main() {
+    float alpha = 0.0;
+    vec3  col   = vec3(0.0);
+
+    for (int i = 0; i < MAX_PINGS; i++) {
+      float op = uPingOpacity[i];
+      if (op < 0.004) continue;
+
+      // Cylindrical (XZ plane) distance — ring sweeps in the horizontal plane
+      float dx = vWorldPos.x - uPingOrigin[i].x;
+      float dz = vWorldPos.z - uPingOrigin[i].z;
+      float dist = sqrt(dx * dx + dz * dz);
+      float radius = uPingRadius[i];
+
+      // ── Ring front: extra-bright leading edge ──
+      float ringDist = abs(dist - radius);
+      float ringGlow = max(0.0, 1.0 - ringDist / 0.7) * op * 3.5;
+      ringGlow = pow(ringGlow, 0.55);
+
+      // ── Grid painted onto the entire swept zone ──
+      // No trail fade — the whole area behind the ring stays lit at full
+      // opacity until the ping expires.  Only uPingOpacity controls fade.
+      float gridGlow = 0.0;
+      if (dist < radius) {
+        // Dense world-space XZ grid (0.6-unit cells ≈ 12 game pixels)
+        float gridSz = 0.6;
+        float lw     = 0.10;   // thick lines for high contrast
+        float gx = abs(fract(vWorldPos.x / gridSz + 0.5) - 0.5) * 2.0;
+        float gz = abs(fract(vWorldPos.z / gridSz + 0.5) - 0.5) * 2.0;
+        float lines = max(
+          smoothstep(1.0 - lw * 2.4, 1.0, gx),
+          smoothstep(1.0 - lw * 2.4, 1.0, gz)
+        );
+        // Extra glow where lines cross
+        float cross = min(
+          smoothstep(1.0 - lw * 2.4, 1.0, gx) *
+          smoothstep(1.0 - lw * 2.4, 1.0, gz) * 2.0, 1.0);
+        gridGlow = (lines + cross * 0.5) * op * 1.5;
+      }
+
+      float glow = max(ringGlow, gridGlow);
+      alpha = max(alpha, glow);
+      col  += vec3(0.04, 0.92, 1.0) * glow;
+    }
+
+    if (alpha < 0.004) discard;
+    gl_FragColor = vec4(min(col, vec3(2.5)), min(alpha, 1.0));
+  }
+`;
+
 // Colours (still used in HUD canvas)
 const C_ENV = "#00FFFF";
 const C_SAFE = "#00FF88";
@@ -184,11 +252,24 @@ const C_BG = "#00000A";
 interface Vec2 { x: number; y: number }
 interface Rect { x: number; y: number; w: number; h: number }
 
-interface Ping { x: number; y: number; radius: number; maxRadius: number; type: "small" | "large" | "flare" }
-interface RevealObj { lines: THREE.LineSegments; mat: THREE.LineBasicMaterial; cx: number; cy: number; alpha: number; baseAlpha: number }
-interface EnemyObj { group: THREE.Group; mats: THREE.LineBasicMaterial[]; label: THREE.Sprite; labelMat: THREE.SpriteMaterial }
+interface Ping {
+  x: number; y: number; radius: number; maxRadius: number;
+  type: "small" | "large" | "flare" | "boost";
+  thickness: number; speed: number; color: number;
+  paintedObjects: Set<number>; paintedEnemies: Set<number>; paintedPods: Set<number>;
+  screeches: Set<number>;
+  nearbyObjs: number[];
+}
+interface RevealObj {
+  lines: THREE.LineSegments; mat: THREE.LineBasicMaterial;
+  cx: number; cy: number;
+  alpha: number; baseAlpha: number;
+  fadeTimer: number; fadeDuration: number;
+  tintColor: number;
+}
+interface EnemyObj { group: THREE.Group; mats: THREE.LineBasicMaterial[]; label: THREE.Sprite; labelMat: THREE.SpriteMaterial; jitterTimer: number }
 interface PodObj { group: THREE.Group; mat: THREE.LineBasicMaterial; light: THREE.PointLight; label: THREE.Sprite; labelMat: THREE.SpriteMaterial }
-interface Ping3D { sphere: THREE.Mesh; mat: THREE.MeshBasicMaterial; maxR: number; radius: number; ox: number; oy: number }
+interface Ping3D { sphere: THREE.Mesh; mat: THREE.MeshBasicMaterial; maxR: number; radius: number; ox: number; oy: number; type: string; warpTimer: number; warpPos: THREE.Vector3 | null }
 interface FlareMesh { mesh: THREE.Mesh; light: THREE.PointLight }
 
 interface Enemy {
@@ -675,6 +756,42 @@ class AudioSys {
         out.disconnect(); lp.disconnect();
       } catch { /* nodes already disconnected */ }
     };
+  }
+
+  metallicScreech(delay = 0) {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx; const t0 = ctx.currentTime + delay;
+    const dur = 0.38;
+    const buf = ctx.createBuffer(1, Math.ceil(ctx.sampleRate * dur), ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.055));
+    const src = ctx.createBufferSource(); src.buffer = buf;
+    const hp = ctx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 1800;
+    const bp = ctx.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = 3200; bp.Q.value = 6;
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(0.45, t0); env.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+    src.connect(hp); hp.connect(bp); bp.connect(env); env.connect(this.master);
+    src.start(t0);
+    src.onended = () => { try { src.disconnect(); hp.disconnect(); bp.disconnect(); env.disconnect(); } catch { /**/ } };
+  }
+
+  wallEcho(layered: boolean, delay = 0) {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx; const t0 = ctx.currentTime + delay;
+    const echoCount = layered ? 3 : 1;
+    for (let e = 0; e < echoCount; e++) {
+      const tE = t0 + e * 0.28;
+      const freq = 680 + e * 90;
+      const osc = ctx.createOscillator(); osc.type = "sine"; osc.frequency.value = freq;
+      const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 800 - e * 120;
+      const env = ctx.createGain();
+      env.gain.setValueAtTime(0, tE);
+      env.gain.setValueAtTime(0.10 / (e + 1), tE + 0.01);
+      env.gain.exponentialRampToValueAtTime(0.001, tE + 0.65);
+      osc.connect(lp); lp.connect(env); env.connect(this.master);
+      osc.start(tE); osc.stop(tE + 0.7);
+      osc.onended = () => { try { osc.disconnect(); lp.disconnect(); env.disconnect(); } catch { /**/ } };
+    }
   }
 
   flatline() {
@@ -1740,7 +1857,7 @@ function scatterRocks(
 ): ScatterResult {
   const rng = seededRng(seed);
   const result: ScatterResult = { meshes: [], revealEntries: [], rects: [] };
-  const total = 15 + Math.floor(rng() * 16);
+  const total = 35 + Math.floor(rng() * 20);
 
   let placed = 0;
   while (placed < total) {
@@ -1802,7 +1919,7 @@ function scatterWalls(seed: number, worldW: number, worldH: number): ScatterResu
   const rng = seededRng(seed);
   const result: ScatterResult = { meshes: [], revealEntries: [], rects: [] };
   const wallPalette = [0x1e2c3e, 0x1a2838, 0x243248, 0x162230, 0x202e40, 0x1c2a38];
-  const total = 5 + Math.floor(rng() * 8);
+  const total = 14 + Math.floor(rng() * 10);
 
   for (let w = 0; w < total; w++) {
     const x2d     = 100 + rng() * (worldW - 200);
@@ -1853,7 +1970,7 @@ function scatterDebris(seed: number, worldW: number, worldH: number): ScatterRes
   const rng = seededRng(seed);
   const result: ScatterResult = { meshes: [], revealEntries: [], rects: [] };
   const metalPalette = [0x2a3540, 0x1e2c38, 0x344454, 0x3a4858, 0x1a2632, 0x283848];
-  const total = 10 + Math.floor(rng() * 11);
+  const total = 22 + Math.floor(rng() * 14);
 
   for (let cl = 0; cl < total; cl++) {
     const cx2d = 80 + rng() * (worldW - 160);
@@ -1923,6 +2040,49 @@ function scatterDebris(seed: number, worldW: number, worldH: number): ScatterRes
   return result;
 }
 
+// ─── PLATFORMS ────────────────────────────────────────────────────────────────
+// Large flat disc / tiered-ring structures — the most visually striking shape
+// for the sonar grid since the curved faces wrap the grid naturally.
+function scatterPlatforms(seed: number, worldW: number, worldH: number): ScatterResult {
+  const rng = seededRng(seed);
+  const result: ScatterResult = { meshes: [], revealEntries: [], rects: [] };
+  const palette = [0x1a2a3a, 0x162230, 0x1e2c3e, 0x243040, 0x202838];
+  const total = 10 + Math.floor(rng() * 8);
+
+  for (let i = 0; i < total; i++) {
+    const cx2d = 120 + rng() * (worldW - 240);
+    const cz2d = 120 + rng() * (worldH - 240);
+    const tiers = 1 + Math.floor(rng() * 3);          // 1–3 stacked discs
+    const baseR = (18 + rng() * 30) * WS;             // outer radius
+    const onFloor = rng() > 0.4;
+    const baseY = onFloor ? 0 : WALL_H * (0.5 + rng() * 0.4);
+
+    for (let t = 0; t < tiers; t++) {
+      const tierR = baseR * (1 - t * 0.28);
+      const tierH = (4 + rng() * 8) * WS;
+      const yOff  = t * tierH * 0.85;
+      const segs  = 14 + Math.floor(rng() * 8);   // smooth enough to show curved grid
+      const col   = palette[Math.floor(rng() * palette.length)];
+      const geo   = new THREE.CylinderGeometry(tierR * 0.7, tierR, tierH, segs, 1);
+      const mat   = new THREE.MeshStandardMaterial({ color: col, roughness: 0.92, metalness: 0.12 });
+      const pos   = new THREE.Vector3(cx2d * WS, baseY + yOff, cz2d * WS);
+      const rot   = new THREE.Euler(0, rng() * Math.PI * 2, 0);
+      const mesh  = new THREE.Mesh(geo, mat);
+      mesh.position.copy(pos);
+      mesh.rotation.copy(rot);
+      result.meshes.push(mesh);
+
+      const { lines, mat: lmat } = _makeRevealLines(geo, pos, rot, new THREE.Vector3(1, 1, 1));
+      result.meshes.push(lines);
+      result.revealEntries.push({ lines, mat: lmat, cx: cx2d, cy: cz2d });
+    }
+    // Collider for the widest (bottom) tier only
+    const fr = Math.min(80, Math.max(12, baseR / WS));
+    result.rects.push({ x: cx2d - fr, y: cz2d - fr, w: fr * 2, h: fr * 2 });
+  }
+  return result;
+}
+
 // ============================================================
 // MAIN GAME CLASS
 // ============================================================
@@ -1947,6 +2107,8 @@ class EchoesGame {
   private noiseObjMeshes: Array<{ group: THREE.Group; mat: THREE.LineBasicMaterial }> = [];
   private ping3Ds: Ping3D[] = [];
   private flareMeshes: FlareMesh[] = [];
+  private activeFadeSet: Set<RevealObj> = new Set();
+  private boostPingCooldown = 0;
   private particleSystem: THREE.Points | null = null;
 
   // Mouse look (camera-relative)
@@ -2013,6 +2175,7 @@ class EchoesGame {
   // Analog dashboard state
   private hullIntegrity = 100;
   private hullInDanger = false;  // tracks when hull is in the red zone to fire the sting once
+  private sonarOverlayMat: THREE.ShaderMaterial | null = null;
   private sonarCharge = 100;
   private gaugeDisplay = { o2: 100, depth: 20, sonarCharge: 100, hull: 100, flares: 3 };
   private sonarSwitchAnim = 0;   // ms countdown for toggle snap animation
@@ -2264,6 +2427,8 @@ class EchoesGame {
     this.nearPod = null; this.nearNoise = null;
     this.subtitle = ""; this.subTimer = 0;
 
+    this.activeFadeSet = new Set();
+    this.boostPingCooldown = 0;
     this.enemies = def.enemyDefs.map(e => ({ ...e, state: "patrol" as const, visTimer: 0, listenTimer: 0, damagedAt: 0 }));
     this.pods = def.pods.map(p => ({ ...p }));
     this.noiseObjs = (def.noiseObjs || []).map(o => ({ ...o }));
@@ -2325,18 +2490,46 @@ class EchoesGame {
     this.ping3Ds = [];
     this.flareMeshes = [];
     this.particleSystem = null; // (lived in sceneGroup; already removed above)
+    if (this.sonarOverlayMat) { this.sonarOverlayMat.dispose(); this.sonarOverlayMat = null; }
+
+    // ── Shared sonar overlay material — created early so ALL terrain gets it ──
+    this.sonarOverlayMat = new THREE.ShaderMaterial({
+      vertexShader:   SONAR_VERT,
+      fragmentShader: SONAR_FRAG,
+      transparent:    true,
+      depthWrite:     false,
+      blending:       THREE.AdditiveBlending,
+      side:           THREE.DoubleSide,
+      uniforms: {
+        uPingOrigin:  { value: Array.from({ length: 5 }, () => new THREE.Vector3()) },
+        uPingRadius:  { value: [0, 0, 0, 0, 0] },
+        uPingOpacity: { value: [0, 0, 0, 0, 0] },
+      },
+    });
+    const omat = this.sonarOverlayMat;
+
+    // Helper: add an overlay twin for any Mesh (same geometry, sonar shader)
+    const addOverlay = (m: THREE.Mesh) => {
+      const ov = new THREE.Mesh(m.geometry, omat);
+      ov.position.copy(m.position);
+      ov.rotation.copy(m.rotation);
+      ov.scale.copy(m.scale);
+      this.sceneGroup.add(ov);
+    };
 
     // Muted deep-sea rock palette for solid lit walls
     const wallPalette = [0x2a3a4a, 0x223040, 0x304050, 0x1f2a35, 0x283848, 0x35455a];
 
-    // Obstacle boxes — solid lit meshes (no sonar reveal — visible at all times)
+    // Obstacle boxes — solid lit walls + sonar overlay twin
     let pi = 0;
     for (const rect of def.obstacles) {
       const c = wallPalette[pi++ % wallPalette.length];
-      this.sceneGroup.add(buildObstacleMesh(rect, c));
+      const obsMesh = buildObstacleMesh(rect, c);
+      this.sceneGroup.add(obsMesh);
+      addOverlay(obsMesh);
     }
 
-    // Floor grid cells — solid lit floor + ceiling
+    // Floor grid cells — solid lit floor + ceiling + sonar overlay per tile
     const fCols = Math.ceil(def.worldW / FLOOR_CELL);
     const fRows = Math.ceil(def.worldH / FLOOR_CELL);
     for (let row = 0; row < fRows; row++) {
@@ -2344,21 +2537,27 @@ class EchoesGame {
         const cx = (col + 0.5) * FLOOR_CELL, cy = (row + 0.5) * FLOOR_CELL;
         const cellW = Math.min(FLOOR_CELL, def.worldW - col * FLOOR_CELL);
         const cellH = Math.min(FLOOR_CELL, def.worldH - row * FLOOR_CELL);
-        this.sceneGroup.add(buildFloorMesh(cx, cy, cellW, cellH));
+        const floorM = buildFloorMesh(cx, cy, cellW, cellH);
+        this.sceneGroup.add(floorM);
+        addOverlay(floorM);
         if ((col + row) % 2 === 0) {
-          this.sceneGroup.add(buildCeilMesh(cx, cy, cellW * 2, cellH * 2));
+          const ceilM = buildCeilMesh(cx, cy, cellW * 2, cellH * 2);
+          this.sceneGroup.add(ceilM);
+          addOverlay(ceilM);
         }
       }
     }
 
-    // Stalactites / stalagmites — solid lit cones
-    const stalaCount = Math.floor(def.worldW * def.worldH / 40000);
+    // Stalactites / stalagmites — solid lit cones + sonar overlay twin
+    const stalaCount = Math.floor(def.worldW * def.worldH / 18000);
     for (let i = 0; i < stalaCount; i++) {
       const x3d = (50 + Math.random() * (def.worldW - 100)) * WS;
       const z3d = (50 + Math.random() * (def.worldH - 100)) * WS;
       const h = 0.8 + Math.random() * 3;
       const onFloor = Math.random() > 0.5;
-      this.sceneGroup.add(buildStalactiteMesh(x3d, z3d, onFloor, h));
+      const stalaM = buildStalactiteMesh(x3d, z3d, onFloor, h);
+      this.sceneGroup.add(stalaM);
+      addOverlay(stalaM);
     }
 
     // Bioluminescent point lights scattered throughout (always visible — deep ocean)
@@ -2404,7 +2603,7 @@ class EchoesGame {
       built.group.add(label);
       built.group.visible = false;
       this.sceneGroup.add(built.group);
-      this.enemyObjs.push({ group: built.group, mats: built.mats, label, labelMat: label.material as THREE.SpriteMaterial });
+      this.enemyObjs.push({ group: built.group, mats: built.mats, label, labelMat: label.material as THREE.SpriteMaterial, jitterTimer: 0 });
     }
 
     // Lifepods — labelled with character name
@@ -2448,14 +2647,21 @@ class EchoesGame {
     const wallSeed   = 2001 + (def.id - 1) * 1000;
     const debrisSeed = 3001 + (def.id - 1) * 1000;
 
-    const rocksR  = scatterRocks(rockSeed,   def.worldW, def.worldH, rockGeo);
-    const wallsR  = scatterWalls(wallSeed,   def.worldW, def.worldH);
-    const debrisR = scatterDebris(debrisSeed, def.worldW, def.worldH);
+    const rocksR     = scatterRocks(rockSeed,      def.worldW, def.worldH, rockGeo);
+    const wallsR     = scatterWalls(wallSeed,      def.worldW, def.worldH);
+    const debrisR    = scatterDebris(debrisSeed,   def.worldW, def.worldH);
+    const platformsR = scatterPlatforms(4001 + (def.id - 1) * 1000, def.worldW, def.worldH);
 
-    for (const sr of [rocksR, wallsR, debrisR]) {
-      for (const mesh of sr.meshes)         this.sceneGroup.add(mesh);
-      for (const re of sr.revealEntries)    this.revealObjs.push({ lines: re.lines, mat: re.mat, cx: re.cx, cy: re.cy, alpha: 0, baseAlpha: 0 });
-      for (const rect of sr.rects)          def.obstacles.push(rect);
+    // ── Add scatter meshes + overlay twins ────────────────────────────────────
+    // LineSegments (EdgesGeometry reveals) are skipped — the shader handles all
+    // terrain reveal.  revealEntries are not pushed to revealObjs for the same reason.
+    for (const sr of [rocksR, wallsR, debrisR, platformsR]) {
+      for (const mesh of sr.meshes) {
+        if (mesh instanceof THREE.LineSegments) continue; // shader handles terrain
+        this.sceneGroup.add(mesh);
+        addOverlay(mesh as THREE.Mesh);
+      }
+      for (const rect of sr.rects) def.obstacles.push(rect);
     }
 
     // Transition to PLAYING after the async scatter is done
@@ -2468,19 +2674,70 @@ class EchoesGame {
   private emitSonar(type: "small" | "large") {
     if (this.levBlocked) { this.showSub("[ LEVIATHAN PULSE — SONAR DISRUPTED ]"); return; }
     const maxR = type === "small" ? SONAR_SMALL_R : SONAR_LARGE_R;
-    this.pings.push({ x: this.px, y: this.py, radius: 0, maxRadius: maxR, type });
+    const speed = type === "small" ? 210 : 290;
     this.noise = Math.min(100, this.noise + (type === "small" ? SONAR_SMALL_NOISE : SONAR_LARGE_NOISE));
     this.audio.sonar(type);
     this.sonarCharge = Math.max(0, this.sonarCharge - (type === "small" ? 25 : 50));
     this.sonarSwitchAnim = 200;
     this.valveSonarAngle += Math.PI * (type === "small" ? 0.6 : 1.2);
-    // 3D ping sphere
-    const sphereGeo = new THREE.SphereGeometry(0.5, 14, 10);
-    const smat = new THREE.MeshBasicMaterial({ color: 0x00FFFF, wireframe: true, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false });
-    const sphere = new THREE.Mesh(sphereGeo, smat);
-    sphere.position.set(this.px * WS, EYE_H, this.py * WS);
+    this._spawnPing(this.px, this.py, maxR, speed, 0x00CCFF, type);
+  }
+
+  private _spawnPing(px: number, py: number, maxR: number, speed: number, color: number, type: "small" | "large" | "flare" | "boost") {
+    // Cap total active pings at 5 — dispose oldest first
+    if (this.pings.length >= 5) {
+      this.pings.shift();
+      if (this.ping3Ds.length > 0) {
+        const oldest3D = this.ping3Ds.shift()!;
+        this.scene.remove(oldest3D.sphere);
+        oldest3D.sphere.geometry.dispose();
+        (oldest3D.mat as THREE.Material).dispose();
+      }
+    }
+    // Pre-filter: collect only objects within maxRadius + margin
+    const nearbyObjs: number[] = [];
+    for (let ri = 0; ri < this.revealObjs.length; ri++) {
+      const ro = this.revealObjs[ri];
+      const d = Math.hypot(ro.cx - px, ro.cy - py);
+      if (d <= maxR + 28) nearbyObjs.push(ri);
+    }
+    const newPing: Ping = {
+      x: px, y: py, radius: 0, maxRadius: maxR,
+      type, thickness: 26, speed, color,
+      paintedObjects: new Set(), paintedEnemies: new Set(), paintedPods: new Set(),
+      screeches: new Set(),
+      nearbyObjs,
+    };
+    // Pre-schedule audio at exact distance-crossing times via AudioContext clock.
+    // Only for small/large pings (flare/boost don't trigger enemy detects or wall echoes).
+    if (this.audioReady && (type === "small" || type === "large")) {
+      // Enemy screeches — one per enemy in range, timed to radius-distance crossing
+      for (let ei = 0; ei < this.enemies.length; ei++) {
+        const e = this.enemies[ei];
+        const eDist = Math.hypot(e.x - px, e.y - py);
+        if (eDist <= maxR) {
+          this.audio.metallicScreech(eDist / speed);
+          newPing.screeches.add(ei); // pre-mark so band-test skips audio re-fire
+        }
+      }
+      // Wall echo — timed to ring crossing nearest boundary
+      if (this.lvlDef) {
+        const minWall = Math.min(px, this.lvlDef.worldW - px, py, this.lvlDef.worldH - py);
+        this.audio.wallEcho(type === "large", minWall / speed);
+      }
+    }
+    this.pings.push(newPing);
+    // 3D ring shell
+    const sGeo = new THREE.SphereGeometry(0.5, 16, 12);
+    const smat = new THREE.MeshBasicMaterial({
+      color, wireframe: true, transparent: true,
+      opacity: type === "boost" ? 0.18 : 0.32,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    const sphere = new THREE.Mesh(sGeo, smat);
+    sphere.position.set(px * WS, EYE_H, py * WS);
     this.scene.add(sphere);
-    this.ping3Ds.push({ sphere, mat: smat, maxR: maxR * WS, radius: 0, ox: this.px, oy: this.py });
+    this.ping3Ds.push({ sphere, mat: smat, maxR: maxR * WS, radius: 0, ox: px, oy: py, type, warpTimer: 0, warpPos: null });
   }
 
   private dropFlare() {
@@ -2493,7 +2750,7 @@ class EchoesGame {
     this.valveFlareAngle += Math.PI * 0.75;
     // 3D flare with FLARE label and orbital ring
     const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 8), new THREE.MeshBasicMaterial({ color: 0xFF6600, blending: THREE.AdditiveBlending }));
-    const light = new THREE.PointLight(0xFF6600, 2.5, 40 * WS * 80);
+    const light = new THREE.PointLight(0xFF6600, 2.5, 60 * WS);
     light.position.set(0, 0, 0);
     mesh.add(light);
     // Orbital ring (visual cue like the reference image)
@@ -2639,6 +2896,7 @@ class EchoesGame {
     this.updateInteractables();
     this.updateLeviathan(dt);
     this.updatePings3D(dt);
+    this.updateSonarShader();
     this.updateFlareMeshes(dt);
     this.updateRevealFade(dt);
     this.updateHullStress(dt);
@@ -2695,6 +2953,18 @@ class EchoesGame {
 
     // Boost noise while sprinting with input
     if (boosting && (rawFwd || rawSide)) this.noise = Math.min(100, this.noise + 2.5 * dtS);
+
+    // Boost auto-ping: while shift held, fire a dim ping every 2 s
+    if (boosting) {
+      this.boostPingCooldown -= dt;
+      if (this.boostPingCooldown <= 0) {
+        this.boostPingCooldown = 2000;
+        this._spawnPing(this.px, this.py, 100, 120, 0x888888, "boost");
+        this.noise = Math.min(100, this.noise + 8);
+      }
+    } else {
+      this.boostPingCooldown = 0;
+    }
 
     const nx = this.px + this.pvx * dtS;
     const ny = this.py + this.pvy * dtS;
@@ -2828,9 +3098,30 @@ class EchoesGame {
         // Base dim presence (0.08 min) so creature is always faintly visible; spikes on sonar
         const a = Math.max(0.08, sonarA);
         eobj.group.visible = true;
-        eobj.group.position.set(e.x * WS, EYE_H * 0.5, e.y * WS);
+
+        // Jitter on sonar ping hit: randomize group position offset for 0.5 s
+        let jx = 0, jy = 0, jz = 0;
+        if (eobj.jitterTimer > 0) {
+          eobj.jitterTimer -= dt;
+          const jStr = (eobj.jitterTimer / 500) * 0.18 * WS;
+          jx = (Math.random() - 0.5) * jStr;
+          jy = (Math.random() - 0.5) * jStr * 0.5;
+          jz = (Math.random() - 0.5) * jStr;
+          if (eobj.jitterTimer <= 0) {
+            // Restore normal color after jitter ends
+            for (const m of eobj.mats) m.color.set(0x00FFFF);
+          }
+        }
+        eobj.group.position.set(e.x * WS + jx, EYE_H * 0.5 + jy, e.y * WS + jz);
         eobj.group.rotation.y += 0.012;
-        for (const mat of eobj.mats) mat.opacity = a * (0.7 + Math.random() * 0.3);
+
+        // During jitter: keep red flash; otherwise normal opacity animation
+        if (eobj.jitterTimer > 0) {
+          const flashPulse = 0.7 + Math.sin(Date.now() / 40) * 0.3;
+          for (const mat of eobj.mats) mat.opacity = flashPulse;
+        } else {
+          for (const mat of eobj.mats) mat.opacity = a * (0.7 + Math.random() * 0.3);
+        }
         // THREAT DETECTED label — only show during sonar reveal
         eobj.labelMat.opacity = sonarA * (0.65 + Math.sin(Date.now() / 180) * 0.35);
         // Boost the rim light intensity: dim always, bright on sonar
@@ -2852,41 +3143,102 @@ class EchoesGame {
   }
 
   private updatePings(dt: number) {
-    const tol = 28;
+    const def = this.lvlDef;
     for (let i = this.pings.length - 1; i >= 0; i--) {
       const p = this.pings[i];
-      const speed = p.type === "small" ? 210 : 290;
-      p.radius += speed * (dt / 1000);
+      p.radius += p.speed * (dt / 1000);
+      const inner = p.radius - p.thickness;
+      const outer = p.radius + p.thickness;
 
-      // Reveal obstacles / floor cells
-      for (const ro of this.revealObjs) {
+      // ── Terrain objects — band test on pre-filtered nearbyObjs ──
+      for (const ri of p.nearbyObjs) {
+        if (p.paintedObjects.has(ri)) continue;
+        const ro = this.revealObjs[ri];
         const d = Math.hypot(ro.cx - p.x, ro.cy - p.y);
-        if (Math.abs(d - p.radius) < tol) ro.alpha = Math.max(ro.alpha, 1);
+        if (d >= inner && d <= outer) {
+          p.paintedObjects.add(ri);
+          const dur = p.type === "flare" ? 3000 : 4000;
+          const tint = p.type === "flare" ? 0xFF8C00 : 0x22BBFF;
+          ro.fadeTimer = dur;
+          ro.fadeDuration = dur;
+          ro.tintColor = tint;
+          ro.mat.color.set(tint);
+          ro.alpha = 1;
+          this.activeFadeSet.add(ro);
+        }
       }
-      // Reveal enemies
-      for (const e of this.enemies) {
+
+      // ── Enemies — band test with paintedEnemies gate ──
+      for (let ei = 0; ei < this.enemies.length; ei++) {
+        const e = this.enemies[ei];
         const ed = Math.hypot(e.x - p.x, e.y - p.y);
-        if (Math.abs(ed - p.radius) < tol + e.hitR) e.visTimer = p.type === "small" ? 2400 : 4200;
+        if (ed >= inner - e.hitR && ed <= outer + e.hitR) {
+          const isNew = !p.paintedEnemies.has(ei);
+          if (isNew) {
+            p.paintedEnemies.add(ei);
+            // Enemy fade: 1.5 s vis timer (consistent with spec)
+            e.visTimer = 1500;
+            // Enemy special reveal: red flash on all materials
+            if (ei < this.enemyObjs.length) {
+              const eobj = this.enemyObjs[ei];
+              eobj.group.visible = true;
+              for (const m of eobj.mats) {
+                m.color.set(0xFF3030);
+                m.opacity = 1.0;
+              }
+              eobj.labelMat.opacity = 1.0;
+              eobj.jitterTimer = 500;
+            }
+            // Audio already pre-scheduled at spawn via AudioContext clock; just gate visuals
+            p.screeches.add(ei);
+            // Show THREAT DETECTED subtitle once per enemy per ping
+            this.showSub(`[ THREAT DETECTED — ${e.type.toUpperCase()} ]`, 2200);
+            // Ring mesh warp — record warp position on matching ping3D
+            if (i < this.ping3Ds.length) {
+              const p3 = this.ping3Ds[i];
+              p3.warpTimer = 300;
+              p3.warpPos = new THREE.Vector3(e.x * WS, EYE_H, e.y * WS);
+            }
+          }
+        }
       }
-      // Reveal pods
+
+      // ── Pods — band test with paintedPods gate ──
       for (let pi = 0; pi < this.pods.length; pi++) {
         const pod = this.pods[pi];
         if (pod.rescued) continue;
         const pd = Math.hypot(pod.x - p.x, pod.y - p.y);
-        if (pd <= p.radius + 30) {
+        if (pd >= inner - 20 && pd <= outer + 20 && !p.paintedPods.has(pi)) {
+          p.paintedPods.add(pi);
           pod.revealTimer = p.type === "small" ? 3800 : 6000;
           if (pi < this.podObjs.length) this.podObjs[pi].group.visible = true;
         }
       }
-      // Reveal noise objects
+
+      // ── Noise objects ──
       for (let ni = 0; ni < this.noiseObjs.length; ni++) {
         const o = this.noiseObjs[ni];
         if (o.silenced) continue;
         const od = Math.hypot(o.x - p.x, o.y - p.y);
-        if (od <= p.radius + 22) o.revealTimer = 3200;
+        if (od >= inner - 18 && od <= outer + 18) o.revealTimer = 3200;
       }
 
-      if (p.radius >= p.maxRadius) this.pings.splice(i, 1);
+      // ── Sync radius to matching 3D ring (arrays are kept in lock-step) ──
+      if (i < this.ping3Ds.length) {
+        this.ping3Ds[i].radius = p.radius * WS;
+      }
+
+      // ── Atomic removal: expire both 2D and 3D pings together ──
+      if (p.radius >= p.maxRadius) {
+        if (i < this.ping3Ds.length) {
+          const p3 = this.ping3Ds[i];
+          this.scene.remove(p3.sphere);
+          p3.sphere.geometry.dispose();
+          (p3.mat as THREE.Material).dispose();
+          this.ping3Ds.splice(i, 1);
+        }
+        this.pings.splice(i, 1);
+      }
     }
   }
 
@@ -2899,7 +3251,7 @@ class EchoesGame {
       f.pingTimer -= dt;
       if (f.pingTimer <= 0) {
         f.pingTimer = FLARE_PING_INTERVAL;
-        this.pings.push({ x: f.x, y: f.y, radius: 0, maxRadius: 130, type: "flare" });
+        this._spawnPing(f.x, f.y, 80, 60, 0xFF8800, "flare");
         this.noise = Math.min(100, this.noise + 3);
       }
       if (f.timer <= 0) this.flareObjs.splice(i, 1);
@@ -2948,18 +3300,75 @@ class EchoesGame {
     }
   }
 
-  private updatePings3D(dt: number) {
-    const dtS = dt / 1000;
-    for (let i = this.ping3Ds.length - 1; i >= 0; i--) {
-      const p3 = this.ping3Ds[i];
-      const speed3d = p3.maxR < SONAR_LARGE_R * WS * 0.9 ? 10.5 : 14.5;
-      p3.radius += speed3d * dtS;
-      p3.sphere.scale.setScalar(p3.radius);
-      p3.mat.opacity = Math.max(0, 0.35 * (1 - p3.radius / p3.maxR));
-      if (p3.radius >= p3.maxR) {
-        this.scene.remove(p3.sphere);
-        this.ping3Ds.splice(i, 1);
+  private updateSonarShader() {
+    if (!this.sonarOverlayMat) return;
+    const u       = this.sonarOverlayMat.uniforms;
+    const origins = u.uPingOrigin.value  as THREE.Vector3[];
+    const radii   = u.uPingRadius.value  as number[];
+    const ops     = u.uPingOpacity.value as number[];
+    for (let i = 0; i < 5; i++) {
+      if (i < this.pings.length) {
+        const p = this.pings[i];
+        origins[i].set(p.x * WS, EYE_H, p.y * WS);
+        radii[i] = p.radius * WS;
+        // Flat-top decay: stays near 1.0 for the first ~75% of the ping's
+        // life (ring sweeping out), then drops sharply near the end so the
+        // grid lingers long after the ring passes a surface.
+        ops[i]   = Math.max(0, 1.0 - Math.pow(p.radius / p.maxRadius, 5.0));
+      } else {
+        origins[i].set(0, 0, 0);
+        radii[i] = -1; // mark inactive
+        ops[i]   = 0;
       }
+    }
+  }
+
+  private updatePings3D(dt: number) {
+    // radius is already synced from pings[] in updatePings(); removal is also atomic there.
+    // This method handles 3D visual updates only.
+    for (let i = 0; i < this.ping3Ds.length; i++) {
+      const p3 = this.ping3Ds[i];
+
+      if (p3.radius > 0) {
+        // ── Constant shell thickness: recreate geometry at exact radius each frame ──
+        // World-space wireframe grid squares stay constant in size as ring grows.
+        p3.sphere.geometry.dispose();
+        p3.sphere.geometry = new THREE.SphereGeometry(p3.radius, 16, 12);
+        p3.sphere.scale.set(1, 1, 1);
+      }
+
+      // Opacity: starts full, eases out toward maxR
+      const t = p3.radius / p3.maxR;
+      const baseOpacity = p3.type === "boost" ? 0.18 : 0.32;
+      let opacity = Math.max(0, baseOpacity * (1 - Math.pow(t, 0.55)));
+
+      // ── Warp: localized vertex displacement toward enemy impact point for 0.3 s ──
+      if (p3.warpTimer > 0 && p3.warpPos) {
+        p3.warpTimer -= dt;
+        const warpProgress = 1 - Math.max(0, p3.warpTimer) / 300; // 0→1 over 300 ms
+        const warpStr = Math.sin(warpProgress * Math.PI) * 0.12 * p3.radius;
+        const warpDir = p3.warpPos.clone().sub(p3.sphere.position).normalize();
+        const geo = p3.sphere.geometry;
+        const pos = geo.attributes.position as THREE.BufferAttribute;
+        const arr = pos.array as Float32Array;
+        const vtmp = new THREE.Vector3();
+        for (let vi = 0; vi < arr.length; vi += 3) {
+          // Radial unit vector of this vertex
+          vtmp.set(arr[vi], arr[vi + 1], arr[vi + 2]).normalize();
+          const dot = vtmp.dot(warpDir); // 1 = directly toward enemy, -1 = opposite
+          if (dot > 0) {
+            // Displace outward in proportion to alignment with enemy direction
+            const displace = (dot * dot) * warpStr;
+            arr[vi]     += vtmp.x * displace;
+            arr[vi + 1] += vtmp.y * displace;
+            arr[vi + 2] += vtmp.z * displace;
+          }
+        }
+        pos.needsUpdate = true;
+        opacity = Math.min(1, opacity + 0.22);
+      }
+
+      p3.mat.opacity = opacity;
     }
   }
 
@@ -2980,10 +3389,28 @@ class EchoesGame {
   }
 
   private updateRevealFade(dt: number) {
-    const fadeRate = 0.55 * (dt / 1000);
-    for (const ro of this.revealObjs) {
-      if (ro.alpha > ro.baseAlpha) {
-        ro.alpha = Math.max(ro.baseAlpha, ro.alpha - fadeRate);
+    // Use activeFadeSet for O(active) instead of O(all) iteration
+    const FLASH_DUR = 100; // ms over-bright window at start of reveal
+    for (const ro of this.activeFadeSet) {
+      ro.fadeTimer -= dt;
+      if (ro.fadeTimer <= 0) {
+        ro.fadeTimer = 0;
+        ro.alpha = ro.baseAlpha;
+        ro.mat.opacity = ro.baseAlpha;
+        this.activeFadeSet.delete(ro);
+      } else {
+        const remaining = ro.fadeTimer;
+        const total = ro.fadeDuration;
+        if (remaining > total - FLASH_DUR) {
+          // Over-bright flash phase (first 100 ms): RGB > 1 + AdditiveBlending → ~1.5× intensity
+          ro.mat.color.setRGB(1.5, 1.5, 1.5);
+          ro.alpha = 1.0;
+        } else {
+          // Restore tint; ease-out: pow(t, 0.4) from flash end to zero
+          ro.mat.color.set(ro.tintColor);
+          const fadeFrac = remaining / (total - FLASH_DUR);
+          ro.alpha = Math.pow(fadeFrac, 0.4);
+        }
         ro.mat.opacity = ro.alpha;
       }
     }
