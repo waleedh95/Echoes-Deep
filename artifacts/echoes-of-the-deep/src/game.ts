@@ -1338,12 +1338,15 @@ class EchoesGame {
     const boosting = this.keys["ShiftLeft"] || this.keys["ShiftRight"];
     const spd = PLAYER_SPEED * (boosting ? PLAYER_BOOST_MULT : 1);
 
-    // Absolute world-aligned movement (W=up on map, S=down, A=left, D=right)
+    // Camera-relative movement: W=forward, S=back, A=strafe-left, D=strafe-right
+    // Project camera yaw onto the 2D world plane (yaw=0 faces +Z = +Y in 2D)
+    const fwdX = Math.sin(this.yaw);   // world X component of forward
+    const fwdY = Math.cos(this.yaw);   // world Y component of forward
     let ax = 0, ay = 0;
-    if (this.keys["KeyW"] || this.keys["ArrowUp"]) ay -= spd;
-    if (this.keys["KeyS"] || this.keys["ArrowDown"]) ay += spd;
-    if (this.keys["KeyA"] || this.keys["ArrowLeft"]) ax -= spd;
-    if (this.keys["KeyD"] || this.keys["ArrowRight"]) ax += spd;
+    if (this.keys["KeyW"] || this.keys["ArrowUp"])    { ax += fwdX * spd; ay += fwdY * spd; }
+    if (this.keys["KeyS"] || this.keys["ArrowDown"])  { ax -= fwdX * spd; ay -= fwdY * spd; }
+    if (this.keys["KeyA"] || this.keys["ArrowLeft"])  { ax -= fwdY * spd; ay += fwdX * spd; }
+    if (this.keys["KeyD"] || this.keys["ArrowRight"]) { ax += fwdY * spd; ay -= fwdX * spd; }
 
     this.pvx += ax * dtS; this.pvy += ay * dtS;
     this.pvx *= PLAYER_FRICTION; this.pvy *= PLAYER_FRICTION;
@@ -1399,19 +1402,24 @@ class EchoesGame {
       }
       if (this.invTimer > 0) this.invTimer -= dt;
 
-      // Sync 3D enemy position
+      // Sync 3D enemy position — always render, sonar controls brightness
       if (i < this.enemyObjs.length) {
         const eobj = this.enemyObjs[i];
-        const a = Math.min(1, e.visTimer / 900);
-        const visible = a > 0;
-        eobj.group.visible = visible;
-        if (visible) {
-          eobj.group.position.set(e.x * WS, EYE_H * 0.5, e.y * WS);
-          eobj.group.rotation.y += 0.012;
-          for (const mat of eobj.mats) mat.opacity = a * (0.7 + Math.random() * 0.3);
-          // THREAT DETECTED label pulses
-          eobj.labelMat.opacity = a * (0.65 + Math.sin(Date.now() / 180) * 0.35);
-        }
+        const sonarA = Math.min(1, e.visTimer / 900);
+        // Base dim presence (0.08 min) so creature is always faintly visible; spikes on sonar
+        const a = Math.max(0.08, sonarA);
+        eobj.group.visible = true;
+        eobj.group.position.set(e.x * WS, EYE_H * 0.5, e.y * WS);
+        eobj.group.rotation.y += 0.012;
+        for (const mat of eobj.mats) mat.opacity = a * (0.7 + Math.random() * 0.3);
+        // THREAT DETECTED label — only show during sonar reveal
+        eobj.labelMat.opacity = sonarA * (0.65 + Math.sin(Date.now() / 180) * 0.35);
+        // Boost the rim light intensity: dim always, bright on sonar
+        eobj.group.traverse((child) => {
+          if ((child as THREE.PointLight).isPointLight) {
+            (child as THREE.PointLight).intensity = 0.3 + sonarA * 2.8;
+          }
+        });
       }
     }
   }
@@ -1910,7 +1918,7 @@ class EchoesGame {
       ctx.fillText("[ PRESS SPACE OR CLICK TO BEGIN ]", GAME_W/2, GAME_H/2+68);
     }
     ctx.fillStyle = "rgba(255,255,255,0.28)"; ctx.font = "11px monospace";
-    const ctrls = ["WASD — MOVE (W=up, S=down, A=left, D=right)    SHIFT — BOOST",
+    const ctrls = ["WASD — MOVE (W=forward, S=back, A=left, D=right)    SHIFT — BOOST",
       "CLICK — sonar ping    HOLD 1s — large ping    F — flare",
       "E — interact / dock    MOUSE — look around (voice acting on)",];
     ctrls.forEach((c,i) => ctx.fillText(c, GAME_W/2, GAME_H/2+118+i*19));
