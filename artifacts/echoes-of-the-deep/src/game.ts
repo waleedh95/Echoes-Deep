@@ -1163,6 +1163,16 @@ class EchoesGame {
   private sacrificing = false; private transitioning = false;
   private levPulseTimer = 8000; private levBlocked = false;
 
+  // Analog dashboard state
+  private hullIntegrity = 100;
+  private sonarCharge = 100;
+  private gaugeDisplay = { o2: 100, depth: 20, sonarCharge: 100, hull: 100, flares: 3 };
+  private sonarSwitchAnim = 0;   // ms countdown for toggle snap animation
+  private flareSwitchAnim = 0;
+  private valveSonarAngle = 0;   // radians — rotary valve animation
+  private valveFlareAngle = 0;
+  private readonly glassScratches: Array<Array<{x1:number;y1:number;x2:number;y2:number;a:number}>> = [];
+
   // Interactables
   private nearPod: Lifepod | null = null;
   private nearNoise: NoiseObj | null = null;
@@ -1337,6 +1347,11 @@ class EchoesGame {
     this.noise = 0; this.alarmTimer = 0; this.lvlTime = 0;
     this.pings = []; this.flareObjs = [];
     this.puzzleDone = false; this.sacrificing = false; this.transitioning = false;
+    this.hullIntegrity = 100; this.sonarCharge = 100;
+    this.sonarSwitchAnim = 0; this.flareSwitchAnim = 0;
+    this.valveSonarAngle = 0; this.valveFlareAngle = 0;
+    const depthBase = [20, 55, 82][idx] ?? 20;
+    this.gaugeDisplay = { o2: def.o2Start, depth: depthBase, sonarCharge: 100, hull: 100, flares: 3 };
     this.levPulseTimer = 8000; this.levBlocked = false;
     this.nearPod = null; this.nearNoise = null;
     this.subtitle = ""; this.subTimer = 0;
@@ -1498,6 +1513,9 @@ class EchoesGame {
     this.pings.push({ x: this.px, y: this.py, radius: 0, maxRadius: maxR, type });
     this.noise = Math.min(100, this.noise + (type === "small" ? SONAR_SMALL_NOISE : SONAR_LARGE_NOISE));
     this.audio.sonar(type);
+    this.sonarCharge = Math.max(0, this.sonarCharge - (type === "small" ? 25 : 50));
+    this.sonarSwitchAnim = 200;
+    this.valveSonarAngle += Math.PI * (type === "small" ? 0.6 : 1.2);
     // 3D ping sphere
     const sphereGeo = new THREE.SphereGeometry(0.5, 14, 10);
     const smat = new THREE.MeshBasicMaterial({ color: 0x00FFFF, wireframe: true, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false });
@@ -1513,6 +1531,8 @@ class EchoesGame {
     this.flareObjs.push({ x: this.px, y: this.py, vy: 18, timer: FLARE_DURATION, pingTimer: 0 });
     this.noise = Math.min(100, this.noise + 5);
     this.audio.flare();
+    this.flareSwitchAnim = 200;
+    this.valveFlareAngle += Math.PI * 0.75;
     // 3D flare with FLARE label and orbital ring
     const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 8), new THREE.MeshBasicMaterial({ color: 0xFF6600, blending: THREE.AdditiveBlending }));
     const light = new THREE.PointLight(0xFF6600, 2.5, 40 * WS * 80);
@@ -1639,6 +1659,7 @@ class EchoesGame {
     this.updateFlares(dt);
     this.updateNoise(dt);
     this.updateO2(dt);
+    this.updateDashboard(dt);
     this.updateCamera(dt);
     this.updateInteractables();
     this.updateLeviathan(dt);
@@ -1728,6 +1749,7 @@ class EchoesGame {
       if (this.invTimer <= 0 && dist < e.hitR + PLAYER_SIZE * 0.8) {
         this.o2 = Math.max(0, this.o2 - O2_LOSS_HIT); this.invTimer = 2200;
         this.glitchTimer = 700; this.noise = Math.min(100, this.noise + 20);
+        this.hullIntegrity = Math.max(0, this.hullIntegrity - 14);
         this.audio.damage(); this.showSub("[ HULL BREACH — OXYGEN DEPLETED ]");
         if (e.type === "leviathan") this.audio.leviathanRoar(2);
       }
@@ -1953,6 +1975,403 @@ class EchoesGame {
   }
 
   // ============================================================
+  // ANALOG DASHBOARD
+  // ============================================================
+  private updateDashboard(dt: number) {
+    const dtS = dt / 1000;
+    // Sonar charge regenerates over time
+    this.sonarCharge = Math.min(100, this.sonarCharge + 14 * dtS);
+    // Hull integrity slowly regenerates when not in a hit window
+    if (this.invTimer <= 0) this.hullIntegrity = Math.min(100, this.hullIntegrity + 1.8 * dtS);
+    // Decrement switch anim timers
+    if (this.sonarSwitchAnim > 0) this.sonarSwitchAnim -= dt;
+    if (this.flareSwitchAnim > 0) this.flareSwitchAnim -= dt;
+    // Valve spring return (decay back toward rest position)
+    if (Math.abs(this.valveSonarAngle) > 0.01) this.valveSonarAngle *= Math.max(0, 1 - 1.6 * dtS);
+    else this.valveSonarAngle = 0;
+    if (Math.abs(this.valveFlareAngle) > 0.01) this.valveFlareAngle *= Math.max(0, 1 - 1.6 * dtS);
+    else this.valveFlareAngle = 0;
+    // Lerp all display values toward targets (smooth needle movement)
+    const k = Math.min(1, 3.5 * dtS);
+    const depthBase = [20, 55, 82][this.lvlIdx] ?? 20;
+    const depthVar = this.lvlDef ? (this.py / this.lvlDef.worldH) * 15 : 0;
+    const targets = {
+      o2: this.o2,
+      depth: depthBase + depthVar,
+      sonarCharge: this.sonarCharge,
+      hull: this.hullIntegrity,
+      flares: this.flares,
+    };
+    for (const key of Object.keys(this.gaugeDisplay) as Array<keyof typeof this.gaugeDisplay>) {
+      this.gaugeDisplay[key] += (targets[key] - this.gaugeDisplay[key]) * k;
+    }
+  }
+
+  private getGlassScratches(idx: number): Array<{x1:number;y1:number;x2:number;y2:number;a:number}> {
+    if (this.glassScratches[idx]) return this.glassScratches[idx];
+    // Deterministic per-gauge scratch patterns (not per-frame random)
+    const PATTERNS = [
+      [{x1:-18,y1:-30,x2:22,y2:15,a:0.055},{x1:5,y1:22,x2:-14,y2:-28,a:0.038},{x1:-36,y1:8,x2:20,y2:-16,a:0.043}],
+      [{x1:12,y1:-36,x2:-16,y2:26,a:0.048},{x1:-22,y1:18,x2:32,y2:-6,a:0.032},{x1:26,y1:32,x2:-8,y2:-14,a:0.041},{x1:-31,y1:-12,x2:14,y2:30,a:0.036}],
+      [{x1:-10,y1:-40,x2:28,y2:20,a:0.052},{x1:18,y1:14,x2:-24,y2:-26,a:0.040},{x1:-34,y1:24,x2:16,y2:-18,a:0.037}],
+      [{x1:22,y1:-34,x2:-12,y2:28,a:0.046},{x1:-26,y1:-18,x2:30,y2:12,a:0.039},{x1:8,y1:36,x2:-20,y2:-8,a:0.051},{x1:-32,y1:16,x2:10,y2:-30,a:0.035}],
+      [{x1:-16,y1:-32,x2:24,y2:18,a:0.053},{x1:14,y1:28,x2:-28,y2:-10,a:0.042},{x1:32,y1:-14,x2:-10,y2:24,a:0.038}],
+    ];
+    this.glassScratches[idx] = PATTERNS[idx % PATTERNS.length];
+    return this.glassScratches[idx];
+  }
+
+  private drawGauge(ctx: CanvasRenderingContext2D, cx: number, cy: number, r: number, value: number, label: string, needleColor: string, idx: number) {
+    const v = Math.max(0, Math.min(1, value));
+    const START_A = Math.PI * 0.75;   // 7:30 o'clock
+    const SWEEP   = Math.PI * 1.5;    // 270° sweep
+
+    // --- Outer brass bezel (radial gradient) ---
+    const bezGrad = ctx.createRadialGradient(cx - r * 0.3, cy - r * 0.3, r * 0.15, cx, cy, r + 9);
+    bezGrad.addColorStop(0,   '#c8a44a');
+    bezGrad.addColorStop(0.35,'#8a6820');
+    bezGrad.addColorStop(0.65,'#4a3a10');
+    bezGrad.addColorStop(1,   '#1e1508');
+    ctx.fillStyle = bezGrad;
+    ctx.beginPath(); ctx.arc(cx, cy, r + 9, 0, Math.PI * 2); ctx.fill();
+
+    // Thin specular ring on bezel
+    ctx.strokeStyle = 'rgba(200,170,80,0.35)';
+    ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(cx, cy, r + 6.5, 0, Math.PI * 2); ctx.stroke();
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+    ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(cx, cy, r + 1, 0, Math.PI * 2); ctx.stroke();
+
+    // --- Glass face ---
+    const glassGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    glassGrad.addColorStop(0,  '#1b2224');
+    glassGrad.addColorStop(0.8,'#0e1617');
+    glassGrad.addColorStop(1,  '#080e0f');
+    ctx.fillStyle = glassGrad; ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill();
+
+    // --- Background arc track ---
+    ctx.strokeStyle = 'rgba(255,255,255,0.07)'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(cx, cy, r - 11, START_A, START_A + SWEEP); ctx.stroke();
+
+    // --- Colored value arc ---
+    if (v > 0.005) {
+      ctx.strokeStyle = needleColor; ctx.shadowColor = needleColor; ctx.shadowBlur = 6;
+      ctx.lineWidth = 2.5;
+      ctx.beginPath(); ctx.arc(cx, cy, r - 11, START_A, START_A + v * SWEEP); ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
+
+    // --- Tick marks ---
+    for (let t = 0; t <= 10; t++) {
+      const frac = t / 10;
+      const a = START_A + frac * SWEEP;
+      const major = t % 2 === 0;
+      const tLen = major ? 9 : 5;
+      ctx.strokeStyle = major ? 'rgba(190,175,140,0.88)' : 'rgba(120,110,85,0.55)';
+      ctx.lineWidth = major ? 1.5 : 1;
+      ctx.beginPath();
+      ctx.moveTo(cx + Math.cos(a) * (r - 3), cy + Math.sin(a) * (r - 3));
+      ctx.lineTo(cx + Math.cos(a) * (r - 3 - tLen), cy + Math.sin(a) * (r - 3 - tLen));
+      ctx.stroke();
+      // Minor tick labels at 0, 50, 100
+      if (t === 0 || t === 5 || t === 10) {
+        const lbl = t === 0 ? '0' : t === 5 ? '50' : '100';
+        const lr = r - 18;
+        ctx.fillStyle = 'rgba(160,148,118,0.7)'; ctx.font = '7px monospace'; ctx.textAlign = 'center';
+        ctx.fillText(lbl, cx + Math.cos(a) * lr, cy + Math.sin(a) * lr + 3);
+      }
+    }
+
+    // --- Needle ---
+    const needleA = START_A + v * SWEEP;
+    const needleLen = r - 14;
+    const tailLen = 9;
+    ctx.save();
+    ctx.translate(cx, cy); ctx.rotate(needleA);
+    // Shadow
+    ctx.strokeStyle = 'rgba(0,0,0,0.45)'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(1.5, tailLen); ctx.lineTo(1.5, -needleLen); ctx.stroke();
+    // Tapered needle body
+    ctx.fillStyle = needleColor;
+    ctx.shadowColor = needleColor; ctx.shadowBlur = 4;
+    ctx.beginPath();
+    ctx.moveTo(-2.2, tailLen); ctx.lineTo(2.2, tailLen);
+    ctx.lineTo(0.6, -needleLen); ctx.lineTo(-0.6, -needleLen);
+    ctx.closePath(); ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.restore();
+
+    // --- Center brass cap ---
+    const capGrad = ctx.createRadialGradient(cx - 2, cy - 2, 0, cx, cy, 7.5);
+    capGrad.addColorStop(0, '#d4a820'); capGrad.addColorStop(0.55, '#7a5212'); capGrad.addColorStop(1, '#1e1000');
+    ctx.fillStyle = capGrad; ctx.beginPath(); ctx.arc(cx, cy, 6.5, 0, Math.PI * 2); ctx.fill();
+    // Center rivet dot
+    ctx.fillStyle = 'rgba(255,210,80,0.7)'; ctx.beginPath(); ctx.arc(cx - 1.5, cy - 1.5, 1.5, 0, Math.PI * 2); ctx.fill();
+
+    // --- Scratched glass overlay (clipped to gauge circle) ---
+    ctx.save();
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.clip();
+    for (const s of this.getGlassScratches(idx)) {
+      ctx.strokeStyle = `rgba(255,255,255,${s.a})`;
+      ctx.lineWidth = 0.6;
+      ctx.beginPath(); ctx.moveTo(cx + s.x1, cy + s.y1); ctx.lineTo(cx + s.x2, cy + s.y2); ctx.stroke();
+    }
+    // Top-left specular highlight
+    const hlGrad = ctx.createRadialGradient(cx - r * 0.38, cy - r * 0.38, 0, cx - r * 0.38, cy - r * 0.38, r * 0.52);
+    hlGrad.addColorStop(0, 'rgba(255,255,255,0.13)'); hlGrad.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = hlGrad; ctx.fillRect(cx - r, cy - r, r, r);
+    ctx.restore();
+
+    // --- Label below gauge ---
+    ctx.fillStyle = 'rgba(185,172,138,0.88)'; ctx.font = 'bold 9px monospace'; ctx.textAlign = 'center';
+    ctx.fillText(label, cx, cy + r + 17);
+  }
+
+  private drawSwitch(ctx: CanvasRenderingContext2D, cx: number, cy: number, label: string, active: boolean) {
+    const sw = 18, sh = 36;
+    const py = cy - sh / 2;
+
+    // Housing body
+    const hGrad = ctx.createLinearGradient(cx - sw/2, py, cx + sw/2, py + sh);
+    hGrad.addColorStop(0, '#2e2a22'); hGrad.addColorStop(1, '#18160f');
+    ctx.fillStyle = hGrad;
+    ctx.beginPath(); ctx.roundRect(cx - sw/2, py, sw, sh, 4); ctx.fill();
+    ctx.strokeStyle = 'rgba(110,100,70,0.5)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.roundRect(cx - sw/2, py, sw, sh, 4); ctx.stroke();
+
+    // Slot groove
+    ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.moveTo(cx, py + 6); ctx.lineTo(cx, py + sh - 6); ctx.stroke();
+
+    // Lever position: snapped UP when active, down when idle
+    const leverY = active ? py + 9 : py + sh - 18;
+    const lGrad = ctx.createLinearGradient(cx - 6, leverY, cx + 6, leverY + 13);
+    lGrad.addColorStop(0, active ? '#e87010' : '#907860');
+    lGrad.addColorStop(1, active ? '#6a3808' : '#3a3020');
+    ctx.fillStyle = lGrad;
+    ctx.beginPath(); ctx.roundRect(cx - 6, leverY, 12, 13, 3); ctx.fill();
+    ctx.strokeStyle = active ? 'rgba(255,180,60,0.6)' : 'rgba(140,120,80,0.4)';
+    ctx.lineWidth = 1; ctx.beginPath(); ctx.roundRect(cx - 6, leverY, 12, 13, 3); ctx.stroke();
+    // Indicator light on lever top
+    if (active) {
+      ctx.fillStyle = '#FFCC44'; ctx.shadowColor = '#FF8800'; ctx.shadowBlur = 8;
+      ctx.beginPath(); ctx.arc(cx, leverY + 3, 2.5, 0, Math.PI * 2); ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+
+    // Rivet dots on housing corners
+    ctx.fillStyle = 'rgba(130,115,80,0.6)';
+    for (const [rx, ry] of [[cx-6, py+4],[cx+6, py+4],[cx-6, py+sh-4],[cx+6, py+sh-4]] as [number,number][]) {
+      ctx.beginPath(); ctx.arc(rx, ry, 1.5, 0, Math.PI * 2); ctx.fill();
+    }
+
+    // Label
+    ctx.fillStyle = active ? 'rgba(255,160,50,0.9)' : 'rgba(160,148,118,0.75)';
+    ctx.font = 'bold 8px monospace'; ctx.textAlign = 'center';
+    ctx.fillText(label, cx, cy + sh / 2 + 12);
+  }
+
+  private drawValve(ctx: CanvasRenderingContext2D, cx: number, cy: number, angle: number, active: boolean, label: string) {
+    const r = 21;
+
+    // Outer rim: aged brass radial gradient
+    const rimGrad = ctx.createRadialGradient(cx - r * 0.32, cy - r * 0.32, r * 0.1, cx, cy, r + 4);
+    rimGrad.addColorStop(0,    active ? '#d4a030' : '#9a7828');
+    rimGrad.addColorStop(0.45, active ? '#7a5018' : '#4e3410');
+    rimGrad.addColorStop(1,    '#1a1006');
+    ctx.fillStyle = rimGrad;
+    ctx.beginPath(); ctx.arc(cx, cy, r + 4, 0, Math.PI * 2); ctx.fill();
+
+    // Active glow ring
+    if (active) {
+      ctx.strokeStyle = 'rgba(255,180,50,0.55)'; ctx.lineWidth = 2; ctx.shadowColor = '#FF8800'; ctx.shadowBlur = 10;
+      ctx.beginPath(); ctx.arc(cx, cy, r + 2, 0, Math.PI * 2); ctx.stroke();
+      ctx.shadowBlur = 0;
+    }
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+
+    // Inner dark face
+    const faceGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    faceGrad.addColorStop(0, '#1c2224'); faceGrad.addColorStop(1, '#0e1415');
+    ctx.fillStyle = faceGrad; ctx.beginPath(); ctx.arc(cx, cy, r - 1, 0, Math.PI * 2); ctx.fill();
+
+    // Four spokes at current angle
+    ctx.save(); ctx.translate(cx, cy); ctx.rotate(angle);
+    const spokeColor = active ? 'rgba(200,160,60,0.88)' : 'rgba(130,110,70,0.68)';
+    ctx.strokeStyle = spokeColor; ctx.lineWidth = 3.5;
+    for (let s = 0; s < 4; s++) {
+      ctx.save(); ctx.rotate(s * Math.PI / 2);
+      ctx.beginPath(); ctx.moveTo(0, r * 0.28); ctx.lineTo(0, r * 0.82); ctx.stroke();
+      ctx.restore();
+    }
+    // Cross hub cap
+    const hubGrad = ctx.createRadialGradient(-r * 0.12, -r * 0.12, 0, 0, 0, r * 0.3);
+    hubGrad.addColorStop(0, active ? '#d4a030' : '#8a6820');
+    hubGrad.addColorStop(1, '#1a1006');
+    ctx.fillStyle = hubGrad; ctx.beginPath(); ctx.arc(0, 0, r * 0.28, 0, Math.PI * 2); ctx.fill();
+    // Hub highlight
+    ctx.fillStyle = 'rgba(255,210,80,0.5)'; ctx.beginPath(); ctx.arc(-r*0.06, -r*0.06, r*0.1, 0, Math.PI*2); ctx.fill();
+    ctx.restore();
+
+    // Indicator notch on rim at current angle (shows rotation position)
+    const notchA = angle - Math.PI / 2; // notch at "12 o'clock" offset by rotation
+    ctx.strokeStyle = active ? 'rgba(255,200,60,0.9)' : 'rgba(160,140,90,0.6)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(cx + Math.cos(notchA) * (r - 5), cy + Math.sin(notchA) * (r - 5));
+    ctx.lineTo(cx + Math.cos(notchA) * (r + 1), cy + Math.sin(notchA) * (r + 1));
+    ctx.stroke();
+
+    // Label
+    ctx.fillStyle = active ? 'rgba(255,160,50,0.9)' : 'rgba(155,142,108,0.72)';
+    ctx.font = 'bold 8px monospace'; ctx.textAlign = 'center';
+    ctx.fillText(label, cx, cy + r + 14);
+  }
+
+  private renderAnalogDashboard() {
+    const ctx = this.hudCtx;
+    const PANEL_Y = Math.floor(GAME_H * 0.75);  // 540 — 25% of screen
+    const PANEL_H = GAME_H - PANEL_Y;            // 180px
+
+    // ── 3D perspective tilt: trapezoid clip simulates looking slightly downward ──
+    // Top edge is narrower (farther from viewer), bottom is full-width (closer)
+    ctx.save();
+    const TAPER = 14;
+    ctx.beginPath();
+    ctx.moveTo(TAPER, PANEL_Y); ctx.lineTo(GAME_W - TAPER, PANEL_Y);
+    ctx.lineTo(GAME_W, GAME_H); ctx.lineTo(0, GAME_H);
+    ctx.closePath(); ctx.clip();
+    // Subtle x-skew to reinforce depth (y unchanged, so circles stay round)
+    ctx.transform(1, 0, 0.015, 1, -PANEL_Y * 0.015, 0);
+
+    // ── Panel base: aged gunmetal aluminum ──
+    const baseGrad = ctx.createLinearGradient(0, PANEL_Y, 0, GAME_H);
+    baseGrad.addColorStop(0,   '#22292c');
+    baseGrad.addColorStop(0.28,'#1a2022');
+    baseGrad.addColorStop(0.68,'#14191a');
+    baseGrad.addColorStop(1,   '#0d1011');
+    ctx.fillStyle = baseGrad; ctx.fillRect(0, PANEL_Y, GAME_W, PANEL_H);
+
+    // Horizontal metal grain lines
+    for (let i = 0; i < 6; i++) {
+      const by = PANEL_Y + 14 + i * 28;
+      ctx.strokeStyle = `rgba(255,255,255,${0.010 + i * 0.003})`; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(0, by); ctx.lineTo(GAME_W, by); ctx.stroke();
+    }
+
+    // Panel scratch marks
+    const scratchDefs: [number,number,number,number][] = [
+      [85,14,175,24],[315,18,425,10],[560,24,690,16],[790,10,910,20],[975,16,1090,8],[1190,12,1258,22],
+    ];
+    ctx.lineWidth = 1;
+    for (const [x1,y1,x2,y2] of scratchDefs) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.022)';
+      ctx.beginPath(); ctx.moveTo(x1, PANEL_Y+y1); ctx.lineTo(x2, PANEL_Y+y2); ctx.stroke();
+    }
+
+    // Side vignettes (grime)
+    const vigL = ctx.createLinearGradient(0, PANEL_Y, 85, PANEL_Y);
+    vigL.addColorStop(0, 'rgba(0,0,0,0.58)'); vigL.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = vigL; ctx.fillRect(0, PANEL_Y, 85, PANEL_H);
+    const vigR = ctx.createLinearGradient(GAME_W-85, PANEL_Y, GAME_W, PANEL_Y);
+    vigR.addColorStop(0, 'rgba(0,0,0,0)'); vigR.addColorStop(1, 'rgba(0,0,0,0.58)');
+    ctx.fillStyle = vigR; ctx.fillRect(GAME_W-85, PANEL_Y, 85, PANEL_H);
+
+    // Top edge: worn highlight + separator
+    const edgeH = ctx.createLinearGradient(0, PANEL_Y, 0, PANEL_Y + 8);
+    edgeH.addColorStop(0, 'rgba(140,125,90,0.88)'); edgeH.addColorStop(1, 'rgba(50,45,30,0)');
+    ctx.fillStyle = edgeH; ctx.fillRect(0, PANEL_Y, GAME_W, 8);
+    ctx.strokeStyle = 'rgba(80,70,50,0.6)'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(0, PANEL_Y + 8); ctx.lineTo(GAME_W, PANEL_Y + 8); ctx.stroke();
+
+    // ── Rivets along top edge ──
+    const rivetY = PANEL_Y + 5;
+    for (let rx = 28; rx < GAME_W - 20; rx += 52) {
+      const rg = ctx.createRadialGradient(rx-1, rivetY-1, 0, rx, rivetY, 5);
+      rg.addColorStop(0, 'rgba(200,180,130,0.9)'); rg.addColorStop(0.45, 'rgba(110,95,65,0.7)');
+      rg.addColorStop(1, 'rgba(30,25,15,0)');
+      ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(rx, rivetY, 4.5, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = 'rgba(0,0,0,0.38)';
+      ctx.beginPath(); ctx.ellipse(rx, rivetY+3.5, 3.5, 1.5, 0, 0, Math.PI*2); ctx.fill();
+    }
+
+    // ── ROW 1: three large primary gauges ──
+    // OXYGEN (left) | [SONAR SWITCH] | DEPTH (center) | [FLARE SWITCH] | SONAR CHARGE (right)
+    const R1 = 32;           // radius
+    const R1_EXT = R1 + 7;  // from center to outer bezel edge = 39
+    const ROW1_CY = PANEL_Y + 9 + R1_EXT;  // 540 + 9 + 39 = 588
+
+    const gO2Color   = this.o2 > 50            ? '#00FF88' : this.o2 > 20            ? '#FFD700' : '#FF4422';
+    this.drawGauge(ctx,  180, ROW1_CY, R1, this.gaugeDisplay.o2 / 100,          'OXYGEN', gO2Color,  0);
+    this.drawGauge(ctx,  640, ROW1_CY, R1, this.gaugeDisplay.depth / 100,        'DEPTH',  '#00CCFF', 1);
+    this.drawGauge(ctx, 1100, ROW1_CY, R1, this.gaugeDisplay.sonarCharge / 100,  'SONAR',  '#22EEBB', 2);
+
+    // Toggle switches sit between the row-1 gauges (at row-1 height)
+    this.drawSwitch(ctx, 415, ROW1_CY, 'SONAR', this.sonarSwitchAnim > 0);
+    this.drawSwitch(ctx, 865, ROW1_CY, 'FLARE', this.flareSwitchAnim > 0);
+
+    // ── ROW 2: two smaller gauges + two rotary valve handles + NOISE arc ──
+    // HULL (left) | BALLAST VALVE | [NOISE ARC] | VENT VALVE | FLARES (right)
+    const R2 = 24;           // radius
+    const R2_EXT = R2 + 6;  // 30
+    const ROW2_CY = ROW1_CY + R1_EXT + 9 + R2_EXT;  // 588 + 39 + 9 + 30 = 666
+
+    const gHullColor = this.hullIntegrity > 50 ? '#00FF88' : this.hullIntegrity > 25 ? '#FFD700' : '#FF4422';
+    this.drawGauge(ctx,  300, ROW2_CY, R2, this.gaugeDisplay.hull / 100,  'HULL',   gHullColor, 3);
+    this.drawGauge(ctx,  980, ROW2_CY, R2, this.gaugeDisplay.flares / 3,  'FLARES', '#FF8C00',  4);
+
+    // Rotary valve handles between gauges (animated on sonar/flare activation)
+    this.drawValve(ctx, 490, ROW2_CY, this.valveSonarAngle, this.sonarSwitchAnim > 0, 'BALLAST');
+    this.drawValve(ctx, 790, ROW2_CY, this.valveFlareAngle, this.flareSwitchAnim > 0, 'VENT');
+
+    // ── Analog NOISE arc meter (center of row 2, between the two valves) ──
+    // Semicircle sweep gauge — purely mechanical, no digital elements
+    {
+      const nx = 640, ny = ROW2_CY, nr = 22;
+      const nv = Math.max(0, Math.min(1, this.noise / 100));
+      const nCol = nv <= 0.30 ? '#00FF88' : nv <= 0.60 ? '#FFD700' : nv <= 0.82 ? '#FF8800' : '#FF3333';
+      const NS = Math.PI * 0.80;  // start angle (slightly left of bottom)
+      const NSW = Math.PI * 1.4;  // sweep (252°)
+
+      // Arc background track
+      ctx.strokeStyle = 'rgba(255,255,255,0.07)'; ctx.lineWidth = 2.8;
+      ctx.beginPath(); ctx.arc(nx, ny, nr - 5, NS, NS + NSW); ctx.stroke();
+      // Filled value arc
+      if (nv > 0.01) {
+        ctx.strokeStyle = nCol; ctx.shadowColor = nCol; ctx.shadowBlur = 5;
+        ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.arc(nx, ny, nr - 5, NS, NS + nv * NSW); ctx.stroke();
+        ctx.shadowBlur = 0;
+      }
+      // Tiny tick marks (5 ticks)
+      for (let t = 0; t <= 4; t++) {
+        const ta = NS + (t / 4) * NSW;
+        const tLen = t === 0 || t === 4 || t === 2 ? 5 : 3;
+        ctx.strokeStyle = 'rgba(160,148,110,0.6)'; ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(nx + Math.cos(ta)*(nr-2), ny + Math.sin(ta)*(nr-2));
+        ctx.lineTo(nx + Math.cos(ta)*(nr-2-tLen), ny + Math.sin(ta)*(nr-2-tLen));
+        ctx.stroke();
+      }
+      // Needle
+      const needleA = NS + nv * NSW;
+      ctx.strokeStyle = nCol; ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(nx, ny);
+      ctx.lineTo(nx + Math.cos(needleA)*(nr-7), ny + Math.sin(needleA)*(nr-7));
+      ctx.stroke();
+      // Center hub
+      ctx.fillStyle = '#4a3810'; ctx.beginPath(); ctx.arc(nx, ny, 3.5, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = 'rgba(200,170,80,0.7)'; ctx.beginPath(); ctx.arc(nx-0.8, ny-0.8, 1.2, 0, Math.PI*2); ctx.fill();
+      // Label
+      ctx.fillStyle = 'rgba(155,142,110,0.72)'; ctx.font = 'bold 7px monospace'; ctx.textAlign = 'center';
+      ctx.fillText('NOISE', nx, ny + nr + 13);
+    }
+
+    ctx.restore(); // end perspective tilt transform
+  }
+
+  // ============================================================
   // RENDER
   // ============================================================
   private render() {
@@ -2014,20 +2433,22 @@ class EchoesGame {
     const gx = glitch ? (Math.random() - 0.5) * 8 : 0;
     const gy = glitch ? (Math.random() - 0.5) * 4 : 0;
 
-    this.renderO2(42 + gx, 42 + gy);
-    this.renderNoiseBar(GAME_W - 258 + gx, 18 + gy);
+    // Level name stays at top
     this.renderLvlName(GAME_W / 2 + gx, 18 + gy);
-    this.renderFlareHUD(18, GAME_H - 28);
+
+    // Analog cockpit dashboard (bottom 22% of screen)
+    this.renderAnalogDashboard();
 
     if (this.nearPod) this.renderPrompt(`[E] DOCK — ${this.nearPod.character}'S POD`);
     else if (this.nearNoise) this.renderPrompt("[E] SILENCE NOISE SOURCE");
     if (this.subTimer > 0 && this.subtitle) this.renderSubtitle();
 
-    // Low O2 vignette pulse
+    // Low O2 vignette pulse (only in the viewport area above the panel)
     if (this.o2 < 20) {
+      const panelY = Math.floor(GAME_H * 0.785);
       const pulse = 0.15 + Math.sin(Date.now() / 320) * 0.12;
       ctx.fillStyle = `rgba(255,0,0,${pulse})`;
-      ctx.fillRect(0, 0, GAME_W, GAME_H);
+      ctx.fillRect(0, 0, GAME_W, panelY);
     }
   }
 
@@ -2078,15 +2499,17 @@ class EchoesGame {
 
   private renderPrompt(text: string) {
     const ctx = this.hudCtx;
+    const panelY = Math.floor(GAME_H * 0.75);
     ctx.fillStyle = "rgba(0,255,136,0.92)"; ctx.font = "14px monospace"; ctx.textAlign = "center";
-    ctx.fillText(text, GAME_W / 2, GAME_H - 60);
+    ctx.fillText(text, GAME_W / 2, panelY - 16);
   }
 
   private renderSubtitle() {
     const ctx = this.hudCtx; const a = Math.min(1, this.subTimer / 500);
+    const panelY = Math.floor(GAME_H * 0.75);
     const maxW = 820;
     const lines = this.wrapTxt(this.subtitle, maxW); const lh = 20;
-    const totH = lines.length * lh; const sy = GAME_H - 30 - totH;
+    const totH = lines.length * lh; const sy = panelY - 14 - totH;
     ctx.fillStyle = `rgba(0,0,0,${a * 0.65})`;
     ctx.fillRect(GAME_W / 2 - maxW / 2 - 12, sy - 6, maxW + 24, totH + 12);
     ctx.fillStyle = `rgba(255,255,255,${a * 0.9})`; ctx.font = "13px monospace"; ctx.textAlign = "center";
