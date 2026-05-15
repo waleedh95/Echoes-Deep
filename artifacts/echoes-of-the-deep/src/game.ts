@@ -247,6 +247,131 @@ class AudioSys {
     const flt = this.ctx.createBiquadFilter(); flt.type = "lowpass"; flt.frequency.value = 160;
     const ng = this.ctx.createGain(); ng.gain.value = 0.035;
     src.connect(flt); flt.connect(ng); ng.connect(this.master); src.start();
+    // Water movement — slow LFO-modulated bandpass resonance (gentle whooshing current)
+    const waterNoiseBuf = this.ctx.createBuffer(1, this.ctx.sampleRate * 8, this.ctx.sampleRate);
+    const wd = waterNoiseBuf.getChannelData(0);
+    for (let i = 0; i < wd.length; i++) wd[i] = (Math.random() * 2 - 1);
+    const waterSrc = this.ctx.createBufferSource(); waterSrc.buffer = waterNoiseBuf; waterSrc.loop = true;
+    const waterFlt = this.ctx.createBiquadFilter(); waterFlt.type = "bandpass"; waterFlt.frequency.value = 280; waterFlt.Q.value = 0.6;
+    const waterLfo = this.ctx.createOscillator(); waterLfo.type = "sine"; waterLfo.frequency.value = 0.04;
+    const waterLfoG = this.ctx.createGain(); waterLfoG.gain.value = 90;
+    waterLfo.connect(waterLfoG); waterLfoG.connect(waterFlt.frequency);
+    const waterG = this.ctx.createGain(); waterG.gain.value = 0.022;
+    waterSrc.connect(waterFlt); waterFlt.connect(waterG); waterG.connect(this.master);
+    waterSrc.start(); waterLfo.start();
+    // Distant pressure drone — very low sub-bass rumble (hull under pressure)
+    const drone = this.ctx.createOscillator(); drone.type = "sine"; drone.frequency.value = 22;
+    const droneLfo = this.ctx.createOscillator(); droneLfo.type = "sine"; droneLfo.frequency.value = 0.021;
+    const droneLfoG = this.ctx.createGain(); droneLfoG.gain.value = 3;
+    droneLfo.connect(droneLfoG); droneLfoG.connect(drone.frequency);
+    const droneG = this.ctx.createGain(); droneG.gain.value = 0.055;
+    drone.connect(droneG); droneG.connect(this.master);
+    drone.start(); droneLfo.start();
+    // Schedule random ambient hull creaks in the background
+    this.scheduleAmbientCreak();
+  }
+
+  // Ambient creak gain — always-on low volume, independent of depth
+  private ambientCreakGain: GainNode | null = null;
+  private ambientCreakTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private getAmbientCreakGain(): GainNode {
+    if (!this.ambientCreakGain && this.ctx && this.master) {
+      this.ambientCreakGain = this.ctx.createGain();
+      this.ambientCreakGain.gain.value = 0.18;
+      this.ambientCreakGain.connect(this.master);
+    }
+    return this.ambientCreakGain!;
+  }
+
+  stopAmbientCreaks() {
+    if (this.ambientCreakTimer !== null) {
+      clearTimeout(this.ambientCreakTimer);
+      this.ambientCreakTimer = null;
+    }
+  }
+
+  private scheduleAmbientCreak() {
+    if (!this.ctx) return;
+    // Random interval 7–22 s between ambient hull sounds
+    const delay = 7000 + Math.random() * 15000;
+    this.ambientCreakTimer = setTimeout(() => {
+      this.ambientCreakTimer = null;
+      if (!this.ctx || !this.master) return;
+      const roll = Math.random();
+      if (roll < 0.55) {
+        this.ambientHullGroan();
+      } else if (roll < 0.85) {
+        this.ambientHullCreak();
+      } else {
+        // Distant sonar echo — ghostly ping heard through the hull
+        this.ambientDistantPing();
+      }
+      this.scheduleAmbientCreak();
+    }, delay);
+  }
+
+  private ambientHullGroan() {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+    const g = this.getAmbientCreakGain();
+    const t0 = ctx.currentTime;
+    const dur = 1.8 + Math.random() * 1.6;
+    const centers = [68, 125, 260].map(f => f * (0.78 + Math.random() * 0.44));
+    for (const fc of centers) {
+      const bufLen = Math.ceil(ctx.sampleRate * dur);
+      const nb = ctx.createBuffer(1, bufLen, ctx.sampleRate);
+      const nd = nb.getChannelData(0);
+      for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+      const src = ctx.createBufferSource(); src.buffer = nb;
+      const bp = ctx.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = fc; bp.Q.value = 10 + Math.random() * 9;
+      const env = ctx.createGain();
+      env.gain.setValueAtTime(0, t0);
+      env.gain.linearRampToValueAtTime(0.32, t0 + dur * 0.3);
+      env.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+      src.connect(bp); bp.connect(env); env.connect(g);
+      src.start(t0); src.stop(t0 + dur);
+      src.onended = () => { try { src.disconnect(); bp.disconnect(); env.disconnect(); } catch { /* gone */ } };
+    }
+  }
+
+  private ambientHullCreak() {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+    const g = this.getAmbientCreakGain();
+    const t0 = ctx.currentTime;
+    const dur = 0.28 + Math.random() * 0.32;
+    const fc = 160 + Math.random() * 200;
+    const bufLen = Math.ceil(ctx.sampleRate * dur);
+    const nb = ctx.createBuffer(1, bufLen, ctx.sampleRate);
+    const nd = nb.getChannelData(0);
+    for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+    const src = ctx.createBufferSource(); src.buffer = nb;
+    const bp = ctx.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = fc; bp.Q.value = 18 + Math.random() * 12;
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(0.45, t0);
+    env.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+    src.connect(bp); bp.connect(env); env.connect(g);
+    src.start(t0); src.stop(t0 + dur);
+    src.onended = () => { try { src.disconnect(); bp.disconnect(); env.disconnect(); } catch { /* gone */ } };
+  }
+
+  private ambientDistantPing() {
+    if (!this.ctx) return;
+    const ctx = this.ctx;
+    const g = this.getAmbientCreakGain();
+    const t0 = ctx.currentTime;
+    const freq = 620 + Math.random() * 280;
+    const dur = 1.4;
+    const osc = ctx.createOscillator(); osc.type = "sine"; osc.frequency.value = freq;
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(0.07, t0);
+    env.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+    // Heavy lowpass — muffled, heard-through-hull quality
+    const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 900;
+    osc.connect(lp); lp.connect(env); env.connect(g);
+    osc.start(t0); osc.stop(t0 + dur);
+    osc.onended = () => { try { osc.disconnect(); lp.disconnect(); env.disconnect(); } catch { /* gone */ } };
   }
   startBreathing() {
     if (!this.ctx || !this.master) return;
@@ -266,13 +391,43 @@ class AudioSys {
   }
   sonar(type: "small" | "large") {
     if (!this.ctx || !this.master) return;
-    const freq = type === "small" ? 1100 : 780, dur = type === "small" ? 0.5 : 1.3;
-    const osc = this.ctx.createOscillator(), g = this.ctx.createGain();
-    osc.type = "sine"; osc.frequency.setValueAtTime(freq, this.ctx.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(freq * 0.28, this.ctx.currentTime + dur);
-    g.gain.setValueAtTime(0.4, this.ctx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + dur);
-    osc.connect(g); g.connect(this.master); osc.start(); osc.stop(this.ctx.currentTime + dur);
+    const ctx = this.ctx;
+    const t0 = ctx.currentTime;
+    const freq = type === "small" ? 1100 : 780;
+    const dur = type === "small" ? 0.55 : 1.4;
+
+    // Transient click — sharp metallic tap (the emitter pulse)
+    const clickBuf = ctx.createBuffer(1, Math.ceil(ctx.sampleRate * 0.06), ctx.sampleRate);
+    const cd = clickBuf.getChannelData(0);
+    for (let i = 0; i < cd.length; i++) cd[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.008));
+    const clickSrc = ctx.createBufferSource(); clickSrc.buffer = clickBuf;
+    const clickFlt = ctx.createBiquadFilter(); clickFlt.type = "highpass"; clickFlt.frequency.value = 800;
+    const clickG = ctx.createGain(); clickG.gain.value = type === "small" ? 0.28 : 0.38;
+    clickSrc.connect(clickFlt); clickFlt.connect(clickG); clickG.connect(this.master);
+    clickSrc.start(t0);
+
+    // Main ping tone — frequency sweep (existing behaviour, kept)
+    const osc = ctx.createOscillator(), g = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(freq, t0);
+    osc.frequency.exponentialRampToValueAtTime(freq * 0.28, t0 + dur);
+    g.gain.setValueAtTime(0.4, t0);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+    osc.connect(g); g.connect(this.master); osc.start(t0); osc.stop(t0 + dur);
+
+    // Echo — delayed repeat at lower volume (underwater reflection)
+    const echoDelay = type === "small" ? 0.38 : 0.65;
+    const echoOsc = ctx.createOscillator(), echoG = ctx.createGain();
+    const echoLp = ctx.createBiquadFilter(); echoLp.type = "lowpass"; echoLp.frequency.value = 700;
+    echoOsc.type = "sine";
+    echoOsc.frequency.setValueAtTime(freq * 0.96, t0 + echoDelay);
+    echoOsc.frequency.exponentialRampToValueAtTime(freq * 0.18, t0 + echoDelay + dur * 0.7);
+    echoG.gain.setValueAtTime(0, t0);
+    echoG.gain.setValueAtTime(0.14, t0 + echoDelay);
+    echoG.gain.exponentialRampToValueAtTime(0.001, t0 + echoDelay + dur * 0.7);
+    echoOsc.connect(echoLp); echoLp.connect(echoG); echoG.connect(this.master);
+    echoOsc.start(t0); echoOsc.stop(t0 + echoDelay + dur * 0.7 + 0.05);
+    echoOsc.onended = () => { try { echoOsc.disconnect(); echoLp.disconnect(); echoG.disconnect(); } catch { /* gone */ } };
   }
   damage() {
     if (!this.ctx || !this.master) return;
@@ -304,11 +459,95 @@ class AudioSys {
   }
   flare() {
     if (!this.ctx || !this.master) return;
-    const osc = this.ctx.createOscillator(), g = this.ctx.createGain();
-    osc.type = "sine"; osc.frequency.value = 110;
-    g.gain.setValueAtTime(0.25, this.ctx.currentTime);
-    g.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.35);
-    osc.connect(g); g.connect(this.master); osc.start(); osc.stop(this.ctx.currentTime + 0.35);
+    const ctx = this.ctx;
+    const t0 = ctx.currentTime;
+
+    // Thud — short low-freq impact burst (the launch mechanism firing)
+    const thudBufLen = Math.ceil(ctx.sampleRate * 0.18);
+    const thudBuf = ctx.createBuffer(1, thudBufLen, ctx.sampleRate);
+    const td = thudBuf.getChannelData(0);
+    for (let i = 0; i < td.length; i++) td[i] = (Math.random() * 2 - 1);
+    const thudSrc = ctx.createBufferSource(); thudSrc.buffer = thudBuf;
+    const thudLp = ctx.createBiquadFilter(); thudLp.type = "lowpass"; thudLp.frequency.value = 180;
+    const thudG = ctx.createGain();
+    thudG.gain.setValueAtTime(0.52, t0);
+    thudG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.18);
+    thudSrc.connect(thudLp); thudLp.connect(thudG); thudG.connect(this.master);
+    thudSrc.start(t0);
+    thudSrc.onended = () => { try { thudSrc.disconnect(); thudLp.disconnect(); thudG.disconnect(); } catch { /* gone */ } };
+
+    // Sub-bass thud oscillator underneath (deep hull knock)
+    const thudOsc = ctx.createOscillator(); thudOsc.type = "sine"; thudOsc.frequency.value = 55;
+    const thudOscG = ctx.createGain();
+    thudOscG.gain.setValueAtTime(0.45, t0);
+    thudOscG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.22);
+    thudOsc.connect(thudOscG); thudOscG.connect(this.master);
+    thudOsc.start(t0); thudOsc.stop(t0 + 0.22);
+    thudOsc.onended = () => { try { thudOsc.disconnect(); thudOscG.disconnect(); } catch { /* gone */ } };
+
+    // Whoosh — filtered noise with upward frequency sweep (flare accelerating through water)
+    const whooshLen = Math.ceil(ctx.sampleRate * 0.55);
+    const whooshBuf = ctx.createBuffer(1, whooshLen, ctx.sampleRate);
+    const wd = whooshBuf.getChannelData(0);
+    for (let i = 0; i < wd.length; i++) wd[i] = (Math.random() * 2 - 1);
+    const whooshSrc = ctx.createBufferSource(); whooshSrc.buffer = whooshBuf;
+    const whooshFlt = ctx.createBiquadFilter(); whooshFlt.type = "bandpass"; whooshFlt.Q.value = 1.2;
+    whooshFlt.frequency.setValueAtTime(220, t0 + 0.04);
+    whooshFlt.frequency.exponentialRampToValueAtTime(1800, t0 + 0.5);
+    const whooshG = ctx.createGain();
+    whooshG.gain.setValueAtTime(0, t0);
+    whooshG.gain.linearRampToValueAtTime(0.32, t0 + 0.06);
+    whooshG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.55);
+    whooshSrc.connect(whooshFlt); whooshFlt.connect(whooshG); whooshG.connect(this.master);
+    whooshSrc.start(t0 + 0.04);
+    whooshSrc.onended = () => { try { whooshSrc.disconnect(); whooshFlt.disconnect(); whooshG.disconnect(); } catch { /* gone */ } };
+  }
+
+  // Hull danger sting — sharp alarm cluster triggered once when hull enters red zone
+  hullDangerSting() {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx;
+    const master = this.master;
+    const t0 = ctx.currentTime;
+
+    // Low sub-bass warning pulse
+    const subOsc = ctx.createOscillator(); subOsc.type = "sine"; subOsc.frequency.value = 48;
+    const subG = ctx.createGain();
+    subG.gain.setValueAtTime(0, t0);
+    subG.gain.linearRampToValueAtTime(0.38, t0 + 0.05);
+    subG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.7);
+    subOsc.connect(subG); subG.connect(master);
+    subOsc.start(t0); subOsc.stop(t0 + 0.7);
+
+    // Tritone descending alarm — three staggered tones (tense, unresolved)
+    const alarmFreqs = [523, 370, 262];  // C5 → F#4 → C4 tritone descent
+    alarmFreqs.forEach((freq, i) => {
+      const osc = ctx.createOscillator(); osc.type = "sawtooth";
+      osc.frequency.setValueAtTime(freq, t0 + i * 0.09);
+      osc.frequency.exponentialRampToValueAtTime(freq * 0.82, t0 + i * 0.09 + 0.55);
+      const flt = ctx.createBiquadFilter(); flt.type = "lowpass"; flt.frequency.value = 900;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0, t0 + i * 0.09);
+      g.gain.linearRampToValueAtTime(0.22, t0 + i * 0.09 + 0.04);
+      g.gain.exponentialRampToValueAtTime(0.001, t0 + i * 0.09 + 0.6);
+      osc.connect(flt); flt.connect(g); g.connect(master);
+      osc.start(t0 + i * 0.09); osc.stop(t0 + i * 0.09 + 0.65);
+      osc.onended = () => { try { osc.disconnect(); flt.disconnect(); g.disconnect(); } catch { /* gone */ } };
+    });
+
+    // Metallic creak accent — filtered noise burst (hull under stress)
+    const crackLen = Math.ceil(ctx.sampleRate * 0.35);
+    const crackBuf = ctx.createBuffer(1, crackLen, ctx.sampleRate);
+    const nd = crackBuf.getChannelData(0);
+    for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+    const crackSrc = ctx.createBufferSource(); crackSrc.buffer = crackBuf;
+    const crackBp = ctx.createBiquadFilter(); crackBp.type = "bandpass"; crackBp.frequency.value = 380; crackBp.Q.value = 8;
+    const crackG = ctx.createGain();
+    crackG.gain.setValueAtTime(0.3, t0 + 0.18);
+    crackG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.5);
+    crackSrc.connect(crackBp); crackBp.connect(crackG); crackG.connect(master);
+    crackSrc.start(t0 + 0.18);
+    crackSrc.onended = () => { try { crackSrc.disconnect(); crackBp.disconnect(); crackG.disconnect(); } catch { /* gone */ } };
   }
   // ----- LEVIATHAN ROAR — deep guttural growl with FM modulation, sub-bass & noise -----
   leviathanRoar(intensity: 1 | 2 = 1) {
@@ -1430,6 +1669,7 @@ class EchoesGame {
 
   // Analog dashboard state
   private hullIntegrity = 100;
+  private hullInDanger = false;  // tracks when hull is in the red zone to fire the sting once
   private sonarCharge = 100;
   private gaugeDisplay = { o2: 100, depth: 20, sonarCharge: 100, hull: 100, flares: 3 };
   private sonarSwitchAnim = 0;   // ms countdown for toggle snap animation
@@ -1646,7 +1886,7 @@ class EchoesGame {
     this.noise = 0; this.alarmTimer = 0; this.lvlTime = 0;
     this.pings = []; this.flareObjs = [];
     this.puzzleDone = false; this.sacrificing = false; this.transitioning = false;
-    this.hullIntegrity = 100; this.sonarCharge = 100;
+    this.hullIntegrity = 100; this.hullInDanger = false; this.sonarCharge = 100;
     this.sonarSwitchAnim = 0; this.flareSwitchAnim = 0;
     this.valveSonarAngle = 0; this.valveFlareAngle = 0;
     const depthBase = [20, 55, 82][idx] ?? 20;
@@ -2390,6 +2630,13 @@ class EchoesGame {
     this.sonarCharge = Math.min(100, this.sonarCharge + 14 * dtS);
     // Hull integrity slowly regenerates when not in a hit window
     if (this.invTimer <= 0) this.hullIntegrity = Math.min(100, this.hullIntegrity + 1.8 * dtS);
+    // Hull danger sting — fire once when crossing into the red zone, reset when recovering above 35
+    if (this.hullIntegrity < 25 && !this.hullInDanger) {
+      this.hullInDanger = true;
+      this.audio.hullDangerSting();
+    } else if (this.hullIntegrity >= 35 && this.hullInDanger) {
+      this.hullInDanger = false;
+    }
     // Decrement switch anim timers
     if (this.sonarSwitchAnim > 0) this.sonarSwitchAnim -= dt;
     if (this.flareSwitchAnim > 0) this.flareSwitchAnim -= dt;
