@@ -145,13 +145,15 @@ const O2_DRAIN_NORMAL = 1 / 3;
 const O2_DRAIN_BOOST = 1.0;
 const O2_LOSS_HIT = 15;
 const NOISE_DECAY = 5;
-const SONAR_SMALL_R = 160;
-const SONAR_LARGE_R = 360;
+const SONAR_SMALL_R = 550;
+const SONAR_LARGE_R = 3800; // covers entire map — full depth-scan on large ping
 const SONAR_SMALL_NOISE = 5;
 const SONAR_LARGE_NOISE = 25;
 const FLARE_DURATION = 8000;
 const FLARE_PING_INTERVAL = 1500;
 const INTERACT_RADIUS = 65;
+const AUTO_FORWARD_SPEED = 88;  // px/s constant thrust toward the lifepod
+const AUTO_FORWARD_YAW = -Math.PI / 2; // camera always faces +px direction
 
 // 3D visual constants
 const WS = 0.05;          // world scale: 1px → 0.05 Three.js units
@@ -188,7 +190,16 @@ const SONAR_FRAG = /* glsl */`
   uniform vec3  uPingOrigin[MAX_PINGS];
   uniform float uPingRadius[MAX_PINGS];
   uniform float uPingOpacity[MAX_PINGS];
+  uniform vec3  uPingColor[MAX_PINGS];
   varying vec3  vWorldPos;
+
+  // Full-spectrum hue → RGB (smooth HSV-style rainbow)
+  vec3 hueRGB(float h) {
+    float r = abs(h * 6.0 - 3.0) - 1.0;
+    float g = 2.0 - abs(h * 6.0 - 2.0);
+    float b = 2.0 - abs(h * 6.0 - 4.0);
+    return clamp(vec3(r, g, b), 0.0, 1.0);
+  }
 
   void main() {
     float alpha = 0.0;
@@ -198,45 +209,51 @@ const SONAR_FRAG = /* glsl */`
       float op = uPingOpacity[i];
       if (op < 0.004) continue;
 
-      // Cylindrical (XZ plane) distance — ring sweeps in the horizontal plane
-      float dx = vWorldPos.x - uPingOrigin[i].x;
-      float dz = vWorldPos.z - uPingOrigin[i].z;
+      float dx   = vWorldPos.x - uPingOrigin[i].x;
+      float dz   = vWorldPos.z - uPingOrigin[i].z;
       float dist = sqrt(dx * dx + dz * dz);
       float radius = uPingRadius[i];
 
-      // ── Ring front: extra-bright leading edge ──
+      // ── Ring front: blazing leading edge ──
       float ringDist = abs(dist - radius);
-      float ringGlow = max(0.0, 1.0 - ringDist / 0.7) * op * 3.5;
-      ringGlow = pow(ringGlow, 0.55);
+      float ringGlow = max(0.0, 1.0 - ringDist / 0.55) * op * 6.0;
+      ringGlow = pow(ringGlow, 0.45);
 
-      // ── Grid painted onto the entire swept zone ──
-      // No trail fade — the whole area behind the ring stays lit at full
-      // opacity until the ping expires.  Only uPingOpacity controls fade.
+      // ── Grid painted onto entire swept zone ──
       float gridGlow = 0.0;
       if (dist < radius) {
-        // Dense world-space XZ grid (0.6-unit cells ≈ 12 game pixels)
-        float gridSz = 0.6;
-        float lw     = 0.10;   // thick lines for high contrast
+        float gridSz = 0.48;          // finer grid for more detail
+        float lw     = 0.13;
         float gx = abs(fract(vWorldPos.x / gridSz + 0.5) - 0.5) * 2.0;
         float gz = abs(fract(vWorldPos.z / gridSz + 0.5) - 0.5) * 2.0;
         float lines = max(
           smoothstep(1.0 - lw * 2.4, 1.0, gx),
           smoothstep(1.0 - lw * 2.4, 1.0, gz)
         );
-        // Extra glow where lines cross
         float cross = min(
           smoothstep(1.0 - lw * 2.4, 1.0, gx) *
           smoothstep(1.0 - lw * 2.4, 1.0, gz) * 2.0, 1.0);
-        gridGlow = (lines + cross * 0.5) * op * 1.5;
+        gridGlow = (lines + cross * 0.7) * op * 3.2;
       }
 
       float glow = max(ringGlow, gridGlow);
+      if (glow < 0.003) continue;
       alpha = max(alpha, glow);
-      col  += vec3(0.04, 0.92, 1.0) * glow;
+
+      // ── Spectral / rainbow colour — world-position-based ──
+      // Each surface fragment gets a vivid hue from its XZ position,
+      // giving different objects different colours as the reference image shows.
+      float spectralT = fract(vWorldPos.x * 0.12 + vWorldPos.z * 0.08 + float(i) * 0.31);
+      vec3  specColor = hueRGB(spectralT) * 2.4;   // full-saturation rainbow, extra bright
+
+      // Ring front: mostly rainbow; grid behind: blend ping base + rainbow
+      float ringFrac  = ringGlow / (glow + 0.001);
+      vec3  gridColor = uPingColor[i] * 2.0;        // base sonar color (cyan/orange/etc)
+      col += mix(gridColor, specColor, 0.30 + ringFrac * 0.55) * glow;
     }
 
     if (alpha < 0.004) discard;
-    gl_FragColor = vec4(min(col, vec3(2.5)), min(alpha, 1.0));
+    gl_FragColor = vec4(min(col, vec3(5.0)), min(alpha, 1.0));
   }
 `;
 
@@ -278,6 +295,7 @@ interface Enemy {
   state: "patrol" | "alert" | "hunt";
   visTimer: number; hitR: number; listenTimer: number; damagedAt: number;
   roarTimer?: number;
+  hearingDist?: number; alertDist?: number;
 }
 interface Lifepod { x: number; y: number; id: string; rescued: boolean; revealTimer: number; character: string; commsLine: string }
 interface NoiseObj { x: number; y: number; id: string; silenced: boolean; noiseRate: number; revealTimer: number }
@@ -289,10 +307,11 @@ interface LevelData {
   playerStart: Vec2; obstacles: Rect[];
   enemyDefs: Array<Omit<Enemy, "state" | "visTimer" | "listenTimer" | "damagedAt">>;
   pods: Lifepod[]; noiseObjs?: NoiseObj[]; o2Start: number; dialogue: DialogueCue[];
+  flares?: number;
 }
 interface CutscenePanel { text: string; speaker: string; art: string; badge?: string }
 
-type GameState = "MENU" | "PLAYING" | "CUTSCENE" | "CHOICE" | "ENDING_A" | "ENDING_B" | "GAME_OVER" | "LEVEL_TRANSITION";
+type GameState = "MENU" | "PLAYING" | "CUTSCENE" | "DISCOVERY" | "COLLAPSE" | "GAME_OVER" | "LEVEL_TRANSITION";
 
 // ============================================================
 // AUDIO
@@ -879,19 +898,16 @@ class AudioSys {
   speak(text: string) {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
     if (typeof SpeechSynthesisUtterance === "undefined") return;
-    // Strip bracketed tags first ([COMM], [HULL BREACH], etc.)
     const noBrackets = text.replace(/\[[^\]]*\]/g, "").replace(/\s+/g, " ").trim();
     if (!noBrackets) return;
     let voice: "elias" | "narrator" | "child" | "doctor" = "narrator";
     let speakText = noBrackets;
-    // Case-insensitive speaker prefix (handles "Elias: ...", "ELIAS: ...", "Liam: ...", etc.)
     const m = noBrackets.match(/^([A-Za-z]+)\s*:\s*(.+)$/);
     if (m) {
       const sp = m[1].toUpperCase();
-      // Strip surrounding quotes (straight or curly) and trailing/leading spaces
       speakText = m[2].replace(/^["'\u201C\u201D]+|["'\u201C\u201D]+$/g, "").trim();
       if (sp === "ELIAS") voice = "elias";
-      else if (sp === "LIAM" || sp === "MIA" || sp === "NOAH" || sp === "SARA") voice = "child";
+      else if (sp === "MIA" || sp === "NOAH" || sp === "SARA") voice = "child";
       else if (sp === "DOCTOR") voice = "doctor";
     }
     if (!speakText) return;
@@ -904,156 +920,407 @@ class AudioSys {
       window.speechSynthesis.speak(utter);
     } catch { /* ignore — partial-support browsers */ }
   }
+
+  eliasReactionSara() {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx; const t0 = ctx.currentTime;
+    const exhaleLen = Math.ceil(ctx.sampleRate * 2.4);
+    const exBuf = ctx.createBuffer(1, exhaleLen, ctx.sampleRate);
+    const ed = exBuf.getChannelData(0);
+    for (let i = 0; i < ed.length; i++) ed[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.7));
+    const exSrc = ctx.createBufferSource(); exSrc.buffer = exBuf;
+    const exFlt = ctx.createBiquadFilter(); exFlt.type = "bandpass"; exFlt.frequency.value = 310; exFlt.Q.value = 1.1;
+    const exG = ctx.createGain();
+    exG.gain.setValueAtTime(0, t0); exG.gain.linearRampToValueAtTime(0.28, t0 + 0.4); exG.gain.exponentialRampToValueAtTime(0.001, t0 + 2.4);
+    exSrc.connect(exFlt); exFlt.connect(exG); exG.connect(this.master); exSrc.start(t0);
+    exSrc.onended = () => { try { exSrc.disconnect(); exFlt.disconnect(); exG.disconnect(); } catch { /**/ } };
+    const sobOsc = ctx.createOscillator(); sobOsc.type = "sine"; sobOsc.frequency.value = 185;
+    const sobLfo = ctx.createOscillator(); sobLfo.type = "sine"; sobLfo.frequency.value = 5.5;
+    const sobLfoG = ctx.createGain(); sobLfoG.gain.value = 18;
+    sobLfo.connect(sobLfoG); sobLfoG.connect(sobOsc.frequency);
+    const sobG = ctx.createGain();
+    sobG.gain.setValueAtTime(0, t0 + 1.8); sobG.gain.linearRampToValueAtTime(0.14, t0 + 2.2); sobG.gain.exponentialRampToValueAtTime(0.001, t0 + 4.0);
+    sobOsc.connect(sobG); sobG.connect(this.master); sobOsc.start(t0 + 1.8); sobOsc.stop(t0 + 4.0);
+    sobLfo.start(t0 + 1.8); sobLfo.stop(t0 + 4.0);
+    sobOsc.onended = () => { try { sobOsc.disconnect(); sobLfo.disconnect(); sobLfoG.disconnect(); sobG.disconnect(); } catch { /**/ } };
+  }
+
+  eliasReactionNoah() {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx; const t0 = ctx.currentTime;
+    const cryOsc = ctx.createOscillator(); cryOsc.type = "sawtooth";
+    cryOsc.frequency.setValueAtTime(340, t0); cryOsc.frequency.exponentialRampToValueAtTime(220, t0 + 0.22);
+    const cryFlt = ctx.createBiquadFilter(); cryFlt.type = "lowpass"; cryFlt.frequency.value = 800;
+    const cryG = ctx.createGain();
+    cryG.gain.setValueAtTime(0.38, t0); cryG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.25);
+    cryOsc.connect(cryFlt); cryFlt.connect(cryG); cryG.connect(this.master);
+    cryOsc.start(t0); cryOsc.stop(t0 + 0.28);
+    cryOsc.onended = () => { try { cryOsc.disconnect(); cryFlt.disconnect(); cryG.disconnect(); } catch { /**/ } };
+    [1.0, 1.55, 2.1].forEach((tOff, i) => {
+      const wOsc = ctx.createOscillator(); wOsc.type = "sine";
+      wOsc.frequency.value = 240 - i * 30;
+      const wG = ctx.createGain();
+      wG.gain.setValueAtTime(0, t0 + tOff); wG.gain.linearRampToValueAtTime(0.09 - i * 0.02, t0 + tOff + 0.12);
+      wG.gain.exponentialRampToValueAtTime(0.001, t0 + tOff + 0.45);
+      wOsc.connect(wG); if (this.master) wG.connect(this.master); wOsc.start(t0 + tOff); wOsc.stop(t0 + tOff + 0.5);
+      wOsc.onended = () => { try { wOsc.disconnect(); wG.disconnect(); } catch { /**/ } };
+    });
+  }
+
+  eliasReactionMia() {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx; const t0 = ctx.currentTime;
+    const screamOsc = ctx.createOscillator(); screamOsc.type = "sawtooth";
+    screamOsc.frequency.setValueAtTime(260, t0); screamOsc.frequency.linearRampToValueAtTime(420, t0 + 0.35); screamOsc.frequency.exponentialRampToValueAtTime(180, t0 + 0.9);
+    const scFlt = ctx.createBiquadFilter(); scFlt.type = "bandpass"; scFlt.frequency.value = 600; scFlt.Q.value = 1.4;
+    const scG = ctx.createGain();
+    scG.gain.setValueAtTime(0, t0); scG.gain.linearRampToValueAtTime(0.55, t0 + 0.08); scG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.95);
+    screamOsc.connect(scFlt); scFlt.connect(scG); scG.connect(this.master); screamOsc.start(t0); screamOsc.stop(t0 + 1.0);
+    screamOsc.onended = () => { try { screamOsc.disconnect(); scFlt.disconnect(); scG.disconnect(); } catch { /**/ } };
+    [2.2, 3.0, 3.8, 4.6].forEach((tOff, i) => {
+      const sOsc = ctx.createOscillator(); sOsc.type = "sine"; sOsc.frequency.value = 200 - i * 15;
+      const sLfo = ctx.createOscillator(); sLfo.type = "sine"; sLfo.frequency.value = 6 + i;
+      const sLfoG = ctx.createGain(); sLfoG.gain.value = 12;
+      sLfo.connect(sLfoG); sLfoG.connect(sOsc.frequency);
+      const sG = ctx.createGain();
+      sG.gain.setValueAtTime(0, t0 + tOff); sG.gain.linearRampToValueAtTime(0.10, t0 + tOff + 0.08); sG.gain.exponentialRampToValueAtTime(0.001, t0 + tOff + 0.55);
+      sOsc.connect(sG); if (this.master) sG.connect(this.master); sOsc.start(t0 + tOff); sOsc.stop(t0 + tOff + 0.6);
+      sLfo.start(t0 + tOff); sLfo.stop(t0 + tOff + 0.6);
+      sOsc.onended = () => { try { sOsc.disconnect(); sLfo.disconnect(); sLfoG.disconnect(); sG.disconnect(); } catch { /**/ } };
+    });
+  }
+
+  private lullabyGain: GainNode | null = null;
+  private lullabyOscs: OscillatorNode[] = [];
+
+  startLullaby() {
+    if (!this.ctx || !this.master || this.lullabyGain) return;
+    this.lullabyGain = this.ctx.createGain(); this.lullabyGain.gain.value = 0;
+    // Connect directly to destination — bypasses master so Mia's dock can mute
+    // everything else via master while lullaby stays audible independently
+    this.lullabyGain.connect(this.ctx.destination);
+    const freqs = [220, 277, 330, 369, 440, 369, 330, 277];
+    freqs.forEach((f, i) => {
+      const osc = this.ctx!.createOscillator(); osc.type = "sine"; osc.frequency.value = f;
+      const g = this.ctx!.createGain(); g.gain.value = 0.06 / (i % 2 === 0 ? 1 : 1.4);
+      const lfo = this.ctx!.createOscillator(); lfo.type = "sine"; lfo.frequency.value = 0.6 + i * 0.08;
+      const lfoG = this.ctx!.createGain(); lfoG.gain.value = 4;
+      lfo.connect(lfoG); lfoG.connect(osc.frequency);
+      osc.connect(g); g.connect(this.lullabyGain!);
+      osc.start(); lfo.start();
+      this.lullabyOscs.push(osc, lfo);
+    });
+  }
+
+  setLullabyGain(v: number) {
+    if (!this.ctx || !this.lullabyGain) return;
+    this.lullabyGain.gain.linearRampToValueAtTime(Math.max(0, Math.min(1, v)), this.ctx.currentTime + 1.2);
+  }
+
+  ventilatorSound() {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx; const t0 = ctx.currentTime;
+    const mechOsc = ctx.createOscillator(); mechOsc.type = "square"; mechOsc.frequency.value = 8;
+    const mechG = ctx.createGain(); mechG.gain.value = 0.04;
+    const mechFlt = ctx.createBiquadFilter(); mechFlt.type = "bandpass"; mechFlt.frequency.value = 220; mechFlt.Q.value = 3;
+    mechOsc.connect(mechFlt); mechFlt.connect(mechG); mechG.connect(this.master); mechOsc.start(t0);
+    const hissLen = ctx.sampleRate * 8;
+    const hissBuf = ctx.createBuffer(1, hissLen, ctx.sampleRate);
+    const hd = hissBuf.getChannelData(0);
+    for (let i = 0; i < hd.length; i++) hd[i] = (Math.random() * 2 - 1) * 0.3;
+    const hissSrc = ctx.createBufferSource(); hissSrc.buffer = hissBuf; hissSrc.loop = true;
+    const hissFlt = ctx.createBiquadFilter(); hissFlt.type = "bandpass"; hissFlt.frequency.value = 1200; hissFlt.Q.value = 0.5;
+    const hissG = ctx.createGain(); hissG.gain.setValueAtTime(0, t0); hissG.gain.linearRampToValueAtTime(0.05, t0 + 2);
+    hissSrc.connect(hissFlt); hissFlt.connect(hissG); hissG.connect(this.master); hissSrc.start(t0);
+  }
+
+  // On Mia dock: fade all non-lullaby audio to 0 via master; lullaby stands alone
+  miaDockedAudio() {
+    if (!this.ctx || !this.master) return;
+    const now = this.ctx.currentTime;
+    this.master.gain.cancelScheduledValues(now);
+    this.master.gain.setValueAtTime(this.master.gain.value, now);
+    this.master.gain.linearRampToValueAtTime(0, now + 2.2);
+    // Raise lullaby to clear audible level — it was always playing, now revealed
+    if (this.lullabyGain) {
+      this.lullabyGain.gain.cancelScheduledValues(now);
+      this.lullabyGain.gain.setValueAtTime(this.lullabyGain.gain.value, now);
+      this.lullabyGain.gain.linearRampToValueAtTime(0.55, now + 1.5);
+    }
+  }
+
+  // Mia memory ambient: quiet paper/crayon rustle — direct to destination (master is at 0)
+  miaMemoryAudio() {
+    if (!this.ctx) return;
+    const ctx = this.ctx; const now = ctx.currentTime;
+    const rLen = ctx.sampleRate * 5;
+    const rBuf = ctx.createBuffer(1, rLen, ctx.sampleRate);
+    const rd = rBuf.getChannelData(0);
+    for (let i = 0; i < rd.length; i++) rd[i] = (Math.random() * 2 - 1) * 0.35;
+    const rSrc = ctx.createBufferSource(); rSrc.buffer = rBuf;
+    const rFlt = ctx.createBiquadFilter(); rFlt.type = "highpass"; rFlt.frequency.value = 2800;
+    const rG = ctx.createGain();
+    rG.gain.setValueAtTime(0, now); rG.gain.linearRampToValueAtTime(0.035, now + 0.4);
+    rG.gain.linearRampToValueAtTime(0.018, now + 2.5); rG.gain.linearRampToValueAtTime(0, now + 4.5);
+    rSrc.connect(rFlt); rFlt.connect(rG); rG.connect(ctx.destination); rSrc.start(now);
+  }
+
+  // Ramp master gain to 0 (everything goes silent) then start ventilator — used on collapse
+  collapseAudio() {
+    if (!this.ctx || !this.master) return;
+    const now = this.ctx.currentTime;
+    this.master.gain.cancelScheduledValues(now);
+    this.master.gain.setValueAtTime(this.master.gain.value, now);
+    this.master.gain.linearRampToValueAtTime(0, now + 2.8);
+    // Also ramp lullaby to 0 (it bypasses master) — only ventilator remains
+    if (this.lullabyGain) {
+      this.lullabyGain.gain.cancelScheduledValues(now);
+      this.lullabyGain.gain.setValueAtTime(this.lullabyGain.gain.value, now);
+      this.lullabyGain.gain.linearRampToValueAtTime(0, now + 2.5);
+    }
+    // Ventilator fires on its own gain node bypassing master — only sound that remains
+    setTimeout(() => {
+      if (!this.ctx) return;
+      const t0 = this.ctx.currentTime;
+      const mechOsc = this.ctx.createOscillator(); mechOsc.type = "square"; mechOsc.frequency.value = 8;
+      const mechG = this.ctx.createGain(); mechG.gain.value = 0.06;
+      const mechFlt = this.ctx.createBiquadFilter(); mechFlt.type = "bandpass"; mechFlt.frequency.value = 220; mechFlt.Q.value = 3;
+      mechOsc.connect(mechFlt); mechFlt.connect(mechG); mechG.connect(this.ctx.destination); mechOsc.start(t0);
+      const hissLen = this.ctx.sampleRate * 12;
+      const hissBuf = this.ctx.createBuffer(1, hissLen, this.ctx.sampleRate);
+      const hd = hissBuf.getChannelData(0);
+      for (let i = 0; i < hd.length; i++) hd[i] = (Math.random() * 2 - 1) * 0.3;
+      const hissSrc = this.ctx.createBufferSource(); hissSrc.buffer = hissBuf; hissSrc.loop = true;
+      const hissFlt = this.ctx.createBiquadFilter(); hissFlt.type = "bandpass"; hissFlt.frequency.value = 1200; hissFlt.Q.value = 0.5;
+      const hissG = this.ctx.createGain(); hissG.gain.setValueAtTime(0, t0); hissG.gain.linearRampToValueAtTime(0.07, t0 + 1.5);
+      hissSrc.connect(hissFlt); hissFlt.connect(hissG); hissG.connect(this.ctx.destination); hissSrc.start(t0);
+    }, 2900);
+  }
+
+  // Sara memory flash: seagull-like tones + water shimmer
+  saraMemoryAudio() {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx; const now = ctx.currentTime;
+    for (let i = 0; i < 5; i++) {
+      const osc = ctx.createOscillator(); const g = ctx.createGain();
+      osc.type = "sine"; osc.frequency.value = 2100 + i * 380 + Math.random() * 150;
+      g.gain.setValueAtTime(0, now + i * 0.45);
+      g.gain.linearRampToValueAtTime(0.07, now + i * 0.45 + 0.12);
+      g.gain.linearRampToValueAtTime(0.03, now + i * 0.45 + 0.7);
+      g.gain.linearRampToValueAtTime(0, now + i * 0.45 + 1.1);
+      osc.connect(g); g.connect(this.master); osc.start(now + i * 0.45); osc.stop(now + i * 0.45 + 1.1);
+    }
+    const wLen = ctx.sampleRate * 4;
+    const wBuf = ctx.createBuffer(1, wLen, ctx.sampleRate);
+    const wd = wBuf.getChannelData(0);
+    for (let i = 0; i < wd.length; i++) wd[i] = (Math.random() * 2 - 1) * 0.25;
+    const wSrc = ctx.createBufferSource(); wSrc.buffer = wBuf;
+    const wFlt = ctx.createBiquadFilter(); wFlt.type = "bandpass"; wFlt.frequency.value = 700; wFlt.Q.value = 0.4;
+    const wG = ctx.createGain(); wG.gain.setValueAtTime(0, now); wG.gain.linearRampToValueAtTime(0.055, now + 0.5); wG.gain.linearRampToValueAtTime(0, now + 3.8);
+    wSrc.connect(wFlt); wFlt.connect(wG); wG.connect(this.master); wSrc.start(now); wSrc.stop(now + 4);
+  }
+
+  // Noah memory flash: quiet low drone (paper/silence — distant and muffled)
+  noahMemoryAudio() {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx; const now = ctx.currentTime;
+    const osc = ctx.createOscillator(); osc.type = "triangle"; osc.frequency.value = 160;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, now); g.gain.linearRampToValueAtTime(0.065, now + 0.9);
+    g.gain.linearRampToValueAtTime(0.04, now + 3); g.gain.linearRampToValueAtTime(0, now + 4.8);
+    osc.connect(g); g.connect(this.master); osc.start(now); osc.stop(now + 4.8);
+    // Soft paper-rustle texture
+    const rLen = ctx.sampleRate * 2;
+    const rBuf = ctx.createBuffer(1, rLen, ctx.sampleRate);
+    const rd = rBuf.getChannelData(0);
+    for (let i = 0; i < rd.length; i++) rd[i] = (Math.random() * 2 - 1) * 0.4;
+    const rSrc = ctx.createBufferSource(); rSrc.buffer = rBuf;
+    const rFlt = ctx.createBiquadFilter(); rFlt.type = "highpass"; rFlt.frequency.value = 3000;
+    const rG = ctx.createGain(); rG.gain.setValueAtTime(0.04, now); rG.gain.linearRampToValueAtTime(0, now + 1.5);
+    rSrc.connect(rFlt); rFlt.connect(rG); rG.connect(this.master); rSrc.start(now);
+  }
 }
 
 // ============================================================
 // LEVEL DATA
 // ============================================================
 function level1(): LevelData {
+  // ── CAVE TUNNEL DESIGN ────────────────────────────────────────────────────
+  // Layout: horizontal tunnel y=700→1300 (600 units tall), player at (200,1000).
+  // Pod at (2870, 950) — dead ahead, no walls crossing the corridor.
+  // Ceiling rock mass above y=700, floor rock mass below y=1300.
+  // Stalactites jut from ceiling (no lower than y=780) and
+  // stalagmites from floor (no higher than y=1220) — decorative, never blocking.
   const obs: Rect[] = [
-    { x: 0, y: 0, w: 800, h: 50 }, { x: 0, y: 2950, w: 800, h: 50 },
-    { x: 0, y: 50, w: 50, h: 2900 }, { x: 750, y: 50, w: 50, h: 2900 },
-    { x: 50, y: 50, w: 260, h: 830 }, { x: 50, y: 1080, w: 260, h: 620 },
-    { x: 50, y: 1820, w: 260, h: 1130 },
-    { x: 490, y: 50, w: 260, h: 1330 }, { x: 490, y: 1580, w: 260, h: 1370 },
-    { x: 50, y: 880, w: 130, h: 40 }, { x: 50, y: 1040, w: 130, h: 40 },
-    { x: 620, y: 1380, w: 130, h: 40 }, { x: 620, y: 1540, w: 130, h: 40 },
-    { x: 310, y: 1700, w: 55, h: 100 }, { x: 435, y: 1720, w: 55, h: 80 },
-    { x: 330, y: 2280, w: 55, h: 45 }, { x: 410, y: 2240, w: 70, h: 35 },
-    { x: 355, y: 2360, w: 40, h: 75 }, { x: 430, y: 2370, w: 50, h: 55 },
-    { x: 310, y: 2460, w: 30, h: 60 }, { x: 460, y: 2440, w: 30, h: 50 },
-    { x: 330, y: 480, w: 28, h: 22 }, { x: 440, y: 1100, w: 22, h: 28 },
-    { x: 370, y: 2050, w: 30, h: 20 }, { x: 420, y: 650, w: 20, h: 30 },
+    // ── World boundary ───────────────────────────────────────────────────
+    { x: 0, y: 0, w: 3200, h: 55 },
+    { x: 0, y: 1945, w: 3200, h: 55 },
+    { x: 0, y: 55, w: 55, h: 1890 },
+    { x: 3145, y: 55, w: 55, h: 1890 },
+
+    // ── Cave ceiling — solid rock above the tunnel ────────────────────────
+    { x: 55, y: 55, w: 3090, h: 645 },   // ceiling → tunnel top opens at y=700
+
+    // ── Cave floor — solid rock below the tunnel ──────────────────────────
+    { x: 55, y: 1300, w: 3090, h: 645 }, // floor → tunnel bottom at y=1300
+
+    // ── Ceiling stalactites — decorative protrusions (max depth y=780) ────
+    { x: 280,  y: 700, w: 90,  h: 65 },
+    { x: 560,  y: 700, w: 70,  h: 75 },
+    { x: 860,  y: 700, w: 95,  h: 60 },
+    { x: 1140, y: 700, w: 80,  h: 70 },
+    { x: 1440, y: 700, w: 100, h: 65 },
+    { x: 1740, y: 700, w: 85,  h: 72 },
+    { x: 2040, y: 700, w: 90,  h: 60 },
+    { x: 2340, y: 700, w: 75,  h: 68 },
+    { x: 2620, y: 700, w: 88,  h: 65 },
+
+    // ── Floor stalagmites — decorative protrusions (min height y=1220) ────
+    { x: 160,  y: 1235, w: 80,  h: 65 },
+    { x: 450,  y: 1235, w: 90,  h: 65 },
+    { x: 740,  y: 1235, w: 75,  h: 65 },
+    { x: 1020, y: 1235, w: 85,  h: 65 },
+    { x: 1310, y: 1235, w: 80,  h: 65 },
+    { x: 1600, y: 1235, w: 90,  h: 65 },
+    { x: 1880, y: 1235, w: 78,  h: 65 },
+    { x: 2160, y: 1235, w: 85,  h: 65 },
+    { x: 2450, y: 1235, w: 80,  h: 65 },
+    { x: 2720, y: 1235, w: 75,  h: 65 },
+
+    // ── Pod chamber — very gentle narrowing near the end ─────────────────
+    { x: 2760, y: 700, w: 440, h: 70 },  // ceiling juts lower near pod
+    { x: 2760, y: 1230, w: 440, h: 70 }, // floor juts higher near pod
   ];
   return {
-    id: 1, name: "LEVEL I — THE DESCENT", worldW: 800, worldH: 3000,
-    playerStart: { x: 400, y: 160 },
+    id: 1, name: "LEVEL I — THE WIFE", worldW: 3200, worldH: 2000,
+    playerStart: { x: 200, y: 1000 },
     obstacles: obs,
     enemyDefs: [{
-      x: 400, y: 1300, type: "drifter",
-      waypoints: [{ x: 400, y: 1000 }, { x: 400, y: 1700 }, { x: 370, y: 1350 }, { x: 430, y: 1350 }],
-      wpIdx: 0, speed: 38, hitR: 32,
+      x: 1400, y: 950, type: "drifter",
+      // All waypoints are in the tunnel corridor (y=800–1200)
+      waypoints: [
+        { x: 600,  y: 950  },
+        { x: 1100, y: 820  },
+        { x: 1700, y: 1060 },
+        { x: 2300, y: 900  },
+        { x: 1900, y: 1150 },
+        { x: 1000, y: 1020 },
+      ],
+      wpIdx: 0, speed: 26, hitR: 38,
+      hearingDist: 680, alertDist: 500,
     }],
-    pods: [{ x: 400, y: 2800, id: "sara", rescued: false, revealTimer: 0, character: "SARA", commsLine: '"...is someone there?... please..."' }],
+    pods: [{ x: 2870, y: 950, id: "sara", rescued: false, revealTimer: 0, character: "SARA", commsLine: '"...Come home, Eli."' }],
     o2Start: 100,
     dialogue: [
-      { time: 1.5, text: "Click to emit sonar. Hold 1s for large ping. Use WASD to move." },
-      { time: 9, text: 'Elias: "Rescue mission CREST-7. Descending to sector nine."' },
-      { time: 22, text: 'Elias: "Oxygen nominal. Keeping the acoustic signature low."' },
-      { time: 48, text: 'Elias: "Signal. Something survived down here."' },
+      { time: 1.5,  text: "WASD to navigate. Click to ping sonar. Hold 1 second for LARGE PING — reveals the whole cave." },
+      { time: 8,    text: 'Elias: "Descending into the wreck site. She has to be here."' },
+      { time: 22,   text: 'Elias: "Oxygen nominal. Keep acoustic signature low — it can hear you."' },
+      { time: 45,   text: 'Elias: "Pod signal detected. Bearing 0-8-5. Heading east along the tunnel."' },
+      { time: 70,   text: 'Elias: "Sara... I\'m coming. I should have been faster."' },
     ],
   };
 }
 function level2(): LevelData {
   const obs: Rect[] = [
-    { x: 0, y: 0, w: 2000, h: 55 }, { x: 0, y: 1345, w: 2000, h: 55 },
-    { x: 0, y: 55, w: 55, h: 1290 }, { x: 1945, y: 55, w: 55, h: 1290 },
-    { x: 420, y: 55, w: 45, h: 345 }, { x: 420, y: 600, w: 45, h: 300 }, { x: 420, y: 1100, w: 45, h: 245 },
-    { x: 55, y: 510, w: 145, h: 38 }, { x: 280, y: 510, w: 90, h: 38 },
-    { x: 820, y: 55, w: 45, h: 145 }, { x: 820, y: 400, w: 45, h: 350 }, { x: 820, y: 950, w: 45, h: 395 },
-    { x: 1040, y: 620, w: 38, h: 400 }, { x: 1220, y: 620, w: 38, h: 400 },
-    { x: 1078, y: 620, w: 142, h: 38 }, { x: 1078, y: 982, w: 142, h: 38 },
-    { x: 1440, y: 55, w: 45, h: 255 }, { x: 1440, y: 530, w: 45, h: 290 }, { x: 1440, y: 1040, w: 45, h: 305 },
-    { x: 55, y: 820, w: 220, h: 38 }, { x: 1510, y: 280, w: 435, h: 38 },
-    { x: 1600, y: 900, w: 345, h: 38 }, { x: 1620, y: 1060, w: 325, h: 38 }, { x: 1620, y: 1180, w: 325, h: 38 },
-    { x: 580, y: 200, w: 180, h: 45 }, { x: 900, y: 1050, w: 120, h: 45 },
-    { x: 1120, y: 200, w: 45, h: 260 }, { x: 640, y: 780, w: 30, h: 30 }, { x: 1300, y: 500, w: 25, h: 35 },
+    { x: 0, y: 0, w: 1800, h: 55 }, { x: 0, y: 1345, w: 1800, h: 55 },
+    { x: 0, y: 55, w: 55, h: 1290 }, { x: 1745, y: 55, w: 55, h: 1290 },
+    { x: 55, y: 55, w: 55, h: 420 }, { x: 55, y: 580, w: 55, h: 380 }, { x: 55, y: 1060, w: 55, h: 285 },
+    { x: 320, y: 55, w: 45, h: 280 }, { x: 320, y: 480, w: 45, h: 360 }, { x: 320, y: 1020, w: 45, h: 325 },
+    { x: 600, y: 55, w: 45, h: 220 }, { x: 600, y: 460, w: 45, h: 420 }, { x: 600, y: 1080, w: 45, h: 265 },
+    { x: 880, y: 55, w: 45, h: 340 }, { x: 880, y: 600, w: 45, h: 300 }, { x: 880, y: 1100, w: 45, h: 245 },
+    { x: 1160, y: 55, w: 45, h: 240 }, { x: 1160, y: 480, w: 45, h: 420 }, { x: 1160, y: 1080, w: 45, h: 265 },
+    { x: 1440, y: 55, w: 45, h: 310 }, { x: 1440, y: 560, w: 45, h: 340 }, { x: 1440, y: 1100, w: 45, h: 245 },
+    { x: 110, y: 440, w: 165, h: 38 }, { x: 110, y: 840, w: 165, h: 38 },
+    { x: 375, y: 290, w: 180, h: 38 }, { x: 375, y: 940, w: 180, h: 38 },
+    { x: 655, y: 380, w: 180, h: 38 }, { x: 655, y: 1020, w: 180, h: 38 },
+    { x: 935, y: 440, w: 180, h: 38 }, { x: 935, y: 900, w: 180, h: 38 },
+    { x: 1215, y: 340, w: 180, h: 38 }, { x: 1215, y: 960, w: 180, h: 38 },
+    { x: 1495, y: 400, w: 200, h: 38 }, { x: 1495, y: 880, w: 200, h: 38 },
+    { x: 750, y: 580, w: 30, h: 30 }, { x: 1050, y: 700, w: 25, h: 35 },
   ];
   return {
-    id: 2, name: "LEVEL II — THE PRESSURE ZONE", worldW: 2000, worldH: 1400,
-    playerStart: { x: 160, y: 200 },
+    id: 2, name: "LEVEL III — FIRST SON", worldW: 1800, worldH: 1400,
+    playerStart: { x: 130, y: 700 },
     obstacles: obs,
     enemyDefs: [
-      { x: 580, y: 220, type: "stalker", waypoints: [{ x: 160, y: 220 }, { x: 760, y: 220 }, { x: 760, y: 460 }, { x: 160, y: 460 }], wpIdx: 0, speed: 62, hitR: 26 },
-      { x: 1130, y: 820, type: "stalker", waypoints: [{ x: 1085, y: 720 }, { x: 1175, y: 720 }, { x: 1175, y: 940 }, { x: 1085, y: 940 }], wpIdx: 0, speed: 54, hitR: 26 },
+      // Entrance corridor guard — wide alert, punishes pings near entry
+      { x: 440, y: 350, type: "stalker", waypoints: [{ x: 110, y: 200 }, { x: 550, y: 200 }, { x: 550, y: 580 }, { x: 110, y: 580 }], wpIdx: 0, speed: 58, hitR: 26, hearingDist: 760, alertDist: 560 },
+      // Pod guard — tighter radius, faster; requires silencing noise objects first
+      { x: 1300, y: 900, type: "stalker", waypoints: [{ x: 1100, y: 700 }, { x: 1550, y: 700 }, { x: 1550, y: 1100 }, { x: 1100, y: 1100 }], wpIdx: 0, speed: 64, hitR: 26, hearingDist: 680, alertDist: 480 },
     ],
-    pods: [{ x: 1870, y: 1240, id: "noah", rescued: false, revealTimer: 0, character: "NOAH", commsLine: '"Dad? ...Dad, is that you?"' }],
+    pods: [{ x: 1650, y: 1180, id: "noah", rescued: false, revealTimer: 0, character: "NOAH", commsLine: '"Dad? Is that you?"' }],
     noiseObjs: [
-      { x: 1098, y: 720, id: "n1", silenced: false, noiseRate: 8, revealTimer: 0 },
-      { x: 1180, y: 790, id: "n2", silenced: false, noiseRate: 6, revealTimer: 0 },
-      { x: 1130, y: 880, id: "n3", silenced: false, noiseRate: 10, revealTimer: 0 },
+      { x: 1120, y: 720, id: "n1", silenced: false, noiseRate: 8, revealTimer: 0 },
+      { x: 1200, y: 820, id: "n2", silenced: false, noiseRate: 7, revealTimer: 0 },
+      { x: 1150, y: 920, id: "n3", silenced: false, noiseRate: 9, revealTimer: 0 },
     ],
     o2Start: 100,
     dialogue: [
-      { time: 3, text: 'Elias: "Pressure at 6,000 meters. Hull integrity holding."' },
-      { time: 16, text: 'Elias: "Multiple life signals. Moving carefully."' },
-      { time: 32, text: 'Elias: "I can hear something. Mechanical. Rhythmic."' },
-      { time: 58, text: 'Elias: "Signal stronger. He\'s close. He has to be."' },
+      { time: 3, text: 'Elias: "Pressure increasing. Tight passages ahead."' },
+      { time: 40, text: 'Elias: "Debris field. Noise sources blocking the dock. Silencing them."' },
     ],
   };
 }
 function level3(): LevelData {
   const obs: Rect[] = [
-    { x: 0, y: 0, w: 2400, h: 55 }, { x: 0, y: 1345, w: 2400, h: 55 },
-    { x: 0, y: 55, w: 55, h: 1290 }, { x: 2345, y: 55, w: 55, h: 1290 },
-    { x: 55, y: 55, w: 65, h: 545 }, { x: 55, y: 760, w: 65, h: 585 },
-    { x: 950, y: 180, w: 85, h: 210 }, { x: 1150, y: 820, w: 105, h: 155 },
-    { x: 1450, y: 260, w: 75, h: 195 }, { x: 1640, y: 720, w: 95, h: 125 },
-    { x: 1320, y: 1020, w: 125, h: 105 }, { x: 780, y: 920, w: 55, h: 80 },
-    { x: 680, y: 480, w: 50, h: 65 }, { x: 1780, y: 480, w: 55, h: 80 },
-    { x: 2040, y: 920, w: 65, h: 50 }, { x: 2120, y: 380, w: 75, h: 60 },
-    { x: 1870, y: 700, w: 40, h: 90 },
-    { x: 380, y: 55, w: 55, h: 130 }, { x: 700, y: 55, w: 35, h: 105 },
-    { x: 1100, y: 55, w: 60, h: 95 }, { x: 1720, y: 55, w: 45, h: 140 },
-    { x: 2020, y: 55, w: 55, h: 85 }, { x: 340, y: 1215, w: 65, h: 130 },
-    { x: 820, y: 1250, w: 45, h: 95 }, { x: 1220, y: 1230, w: 70, h: 115 },
-    { x: 1920, y: 1260, w: 55, h: 85 },
+    { x: 0, y: 0, w: 2500, h: 55 }, { x: 0, y: 1945, w: 2500, h: 55 },
+    { x: 0, y: 55, w: 55, h: 1890 }, { x: 2445, y: 55, w: 55, h: 1890 },
+    { x: 380, y: 55, w: 70, h: 380 }, { x: 380, y: 620, w: 70, h: 460 }, { x: 380, y: 1280, w: 70, h: 665 },
+    { x: 760, y: 55, w: 70, h: 280 }, { x: 760, y: 560, w: 70, h: 540 }, { x: 760, y: 1380, w: 70, h: 565 },
+    { x: 1140, y: 55, w: 70, h: 420 }, { x: 1140, y: 700, w: 70, h: 480 }, { x: 1140, y: 1430, w: 70, h: 515 },
+    { x: 1520, y: 55, w: 70, h: 300 }, { x: 1520, y: 580, w: 70, h: 560 }, { x: 1520, y: 1400, w: 70, h: 545 },
+    { x: 1900, y: 55, w: 70, h: 440 }, { x: 1900, y: 760, w: 70, h: 420 }, { x: 1900, y: 1440, w: 70, h: 505 },
+    { x: 55, y: 400, w: 280, h: 38 }, { x: 55, y: 900, w: 280, h: 38 }, { x: 55, y: 1380, w: 280, h: 38 },
+    { x: 450, y: 260, w: 260, h: 38 }, { x: 450, y: 760, w: 260, h: 38 }, { x: 450, y: 1200, w: 260, h: 38 },
+    { x: 830, y: 380, w: 260, h: 38 }, { x: 830, y: 900, w: 260, h: 38 }, { x: 830, y: 1480, w: 260, h: 38 },
+    { x: 1210, y: 280, w: 260, h: 38 }, { x: 1210, y: 820, w: 260, h: 38 }, { x: 1210, y: 1360, w: 260, h: 38 },
+    { x: 1590, y: 400, w: 260, h: 38 }, { x: 1590, y: 960, w: 260, h: 38 },
+    { x: 1970, y: 320, w: 260, h: 38 }, { x: 1970, y: 880, w: 260, h: 38 }, { x: 1970, y: 1420, w: 260, h: 38 },
+    { x: 2230, y: 55, w: 55, h: 660 }, { x: 2230, y: 1100, w: 55, h: 845 },
+    { x: 580, y: 1500, w: 30, h: 30 }, { x: 1020, y: 850, w: 28, h: 32 }, { x: 1760, y: 1200, w: 32, h: 28 },
   ];
   return {
-    id: 3, name: "LEVEL III — THE ABYSS", worldW: 2400, worldH: 1400,
-    playerStart: { x: 150, y: 700 },
+    id: 3, name: "LEVEL IV — SECOND CHILD", worldW: 2500, worldH: 2000,
+    playerStart: { x: 180, y: 1000 },
     obstacles: obs,
-    enemyDefs: [{
-      x: 1200, y: 700, type: "leviathan",
-      waypoints: [
-        { x: 1200, y: 280 }, { x: 1820, y: 360 }, { x: 2100, y: 700 }, { x: 1820, y: 1040 },
-        { x: 1200, y: 1120 }, { x: 580, y: 1040 }, { x: 360, y: 700 }, { x: 580, y: 360 }, { x: 1200, y: 280 },
-      ],
-      wpIdx: 0, speed: 32, hitR: 85,
-    }],
-    pods: [
-      { x: 720, y: 700, id: "liam", rescued: false, revealTimer: 0, character: "LIAM", commsLine: '"It\'s dark. I don\'t like the dark."' },
-      { x: 1960, y: 700, id: "mia", rescued: false, revealTimer: 0, character: "MIA", commsLine: '"The fishies are sleeping. Are you sleeping too?"' },
+    enemyDefs: [
+      // Entrance zone — standard awareness, loose patrol
+      { x: 700, y: 500, type: "stalker",
+        waypoints: [{ x: 200, y: 300 }, { x: 900, y: 300 }, { x: 900, y: 700 }, { x: 200, y: 700 }],
+        wpIdx: 0, speed: 52, hitR: 26, hearingDist: 700, alertDist: 500 },
+      // Mid-level roamer — elevated awareness, faster response
+      { x: 1400, y: 900, type: "stalker",
+        waypoints: [{ x: 900, y: 700 }, { x: 1800, y: 700 }, { x: 1800, y: 1200 }, { x: 900, y: 1200 }],
+        wpIdx: 0, speed: 60, hitR: 26, hearingDist: 760, alertDist: 560 },
+      // Pod guardian — hyper-sensitive, orbits Mia's pod area
+      { x: 1900, y: 1500, type: "stalker",
+        waypoints: [{ x: 1600, y: 1200 }, { x: 2200, y: 1200 }, { x: 2200, y: 1800 }, { x: 1600, y: 1800 }],
+        wpIdx: 0, speed: 56, hitR: 26, hearingDist: 860, alertDist: 660 },
     ],
-    o2Start: 68,
+    pods: [{ x: 1250, y: 1700, id: "mia", rescued: false, revealTimer: 0, character: "MIA", commsLine: '"I Will Miss You Dad."' }],
+    o2Start: 60, flares: 2,
     dialogue: [
-      { time: 2, text: 'LIAM [COMM]: "It\'s dark. I don\'t like the dark."' },
-      { time: 7, text: 'MIA [COMM]: "The fishies are sleeping. Are you sleeping too?"' },
-      { time: 16, text: 'Elias: "Two signals. Both alive. O2 at 20%. I have to choose."' },
-      { time: 28, text: 'Elias: "Something massive is circling. Keeping the noise down."' },
+      { time: 2, text: 'Elias: "Deepest sector. Oxygen at sixty percent. She\'s here somewhere."' },
+      { time: 14, text: 'Elias: "I can hear... something. A melody."' },
+      { time: 28, text: 'Elias: "Mia used to hum that. When she couldn\'t sleep."' },
+      { time: 50, text: 'Elias: "Multiple contacts. Moving slow. Keep the noise down."' },
+      { time: 80, text: 'Elias: "Pod signal. It\'s her. She\'s been waiting."' },
     ],
   };
 }
 
 // ============================================================
-// CUTSCENE DATA
+// CUTSCENE DATA  (inter-level transition panels)
 // ============================================================
-const CS1: CutscenePanel[] = [
-  { text: "The ocean is silent.\nThe pressure builds.\nSix thousand meters and descending.", speaker: "NARRATOR", art: "ocean" },
-  { text: '"Survivor located. Beginning dock sequence."\n\nHer vital signs are faint.\nBut she is breathing.', speaker: "ELIAS", art: "ocean", badge: "[ SARA — RESCUED ]" },
-  { text: "A memory — unasked for:\nA boat. Afternoon light.\nA family laughing.\n\nHis hand reaches toward someone—\n\nThe image cuts to black.", speaker: "NARRATOR", art: "crack" },
-  { text: '"I found one."\n\nStatic.\n\n"I\'ll find the rest."', speaker: "ELIAS", art: "crack" },
+const CS_SARA_TO_NOAH: CutscenePanel[] = [
+  { text: "The ocean is silent.\n\nA pulse. A signal.\nAn echo of someone he loved.", speaker: "NARRATOR", art: "ocean" },
+  { text: "A memory — unasked for:\nAfternoon light on the water.\nHer hand on his arm.\n\n\"You always come back.\"\n\nThe image cuts to black.", speaker: "NARRATOR", art: "crack" },
+  { text: '"She\'s safe.\n\nOne more."\n\nHe descends.', speaker: "ELIAS", art: "crack" },
 ];
-const CS2: CutscenePanel[] = [
-  { text: "The debris field groans.\nMetal against stone.\nHe is somewhere behind it.", speaker: "NARRATOR", art: "deep" },
-  { text: "A child's drawing, remembered:\nA submarine, in blue crayon.\nTwo words beneath it:\n\n\"DAD COME HOME\"", speaker: "NARRATOR", art: "crack" },
-  { text: "The image cracks.\nLike glass.\nLike something that was never whole\nbut held together anyway.", speaker: "NARRATOR", art: "crack" },
-  { text: '"You\'re safe now."\n\nHis voice catches.\nJust for a moment.\nHe clears his throat.\n\n"I\'ve got you."', speaker: "ELIAS", art: "deep", badge: "[ NOAH — RESCUED ]" },
-];
-const END_A: CutscenePanel[] = [
-  { text: "One pod docked.\nOne pod's light goes dark.\n\nHe made his choice.\nHe begins the ascent.", speaker: "NARRATOR", art: "deep" },
-  { text: "The ocean dissolves.\nThe wireframes collapse.\n\nA hospital room forms\nin the silence.", speaker: "NARRATOR", art: "hospital" },
-  { text: '"His brain activity just spiked."\n\nA pause.\n\n"Then flatlined."', speaker: "DOCTOR", art: "hospital" },
-  { text: "A newspaper clipping:\n\n\"MAN, 38, REMAINS IN COMA AFTER BOATING ACCIDENT\nFAMILY OF FOUR PERISHED. PRONOUNCED BRAIN-DEAD TODAY.\"\n\nThe date is ten years ago.", speaker: "NARRATOR", art: "news" },
-  { text: "He saved one.\n\nIn his mind,\nthat was enough\nto finally let go.", speaker: "NARRATOR", art: "news" },
-];
-const END_B: CutscenePanel[] = [
-  { text: "He reroutes the oxygen.\n\nThe HUD flickers red.\nHis vision blurs at the edges.", speaker: "NARRATOR", art: "deep" },
-  { text: "Both pods lock in.\n\nChildren's voices —\ndistorted, dreamy:\n\n\"...Dad?\"", speaker: "NARRATOR", art: "deep" },
-  { text: "The wireframe ocean\ndissolves into white.\n\nEverything\ndissolves into white.", speaker: "NARRATOR", art: "hospital" },
-  { text: "A heart monitor flatlines.\n\nThe nurse gasps.\n\nThen:\n\nSilence.", speaker: "NARRATOR", art: "hospital" },
-  { text: "In a child's bedroom:\nthe same clipping, pinned to a corkboard.\n\nTwo crayon drawings beside it.\nTwo submarines.\nTwo stick figures inside.", speaker: "NARRATOR", art: "news" },
-  { text: "He saved them all.\n\nEven if only in the place\nthat mattered.", speaker: "NARRATOR", art: "news" },
+const CS_NOAH_TO_MIA: CutscenePanel[] = [
+  { text: "Deeper.\n\nPressure builds at the hull.\nThe sonar reads less and less.", speaker: "NARRATOR", art: "deep" },
+  { text: "A child's drawing, remembered:\nA submarine, in blue crayon.\nScrawled beneath it in unsteady letters:\n\n\"DAD COME HOME\"", speaker: "NARRATOR", art: "crack" },
+  { text: '"Two down.\nOne more signal.\n\nHold on, Mia."', speaker: "ELIAS", art: "deep" },
 ];
 
 // ============================================================
@@ -2111,16 +2378,17 @@ class EchoesGame {
   private boostPingCooldown = 0;
   private particleSystem: THREE.Points | null = null;
 
-  // Mouse look (camera-relative)
-  private yaw = Math.PI;   // start facing into tunnel (+Z)
+  // Camera orientation (yaw is locked to AUTO_FORWARD_YAW — submarine always faces forward)
+  private yaw = AUTO_FORWARD_YAW;
   private pitch = 0;
 
   // Fluid physics
-  private smoothFwd = 0;        // smoothed forward/back input [-1..1]
-  private smoothSide = 0;       // smoothed strafe input [-1..1]
-  private prevYaw = Math.PI;    // yaw from previous frame (for delta-yaw)
-  private cameraRoll = 0;       // current camera roll offset (radians)
-  private cameraPitchOff = 0;   // current camera pitch offset from buoyancy (radians)
+  private smoothFwd = 0;
+  private smoothSide = 0;
+  private prevYaw = AUTO_FORWARD_YAW;
+  private cameraRoll = 0;
+  private cameraPitchOff = 0;
+  private subVertOff = 0;  // cosmetic vertical camera offset from W/S dodge input
 
   // Audio
   private audio = new AudioSys();
@@ -2167,10 +2435,23 @@ class EchoesGame {
   private csPhase: "typing" | "waiting" = "typing";
   private csCallback: (() => void) | null = null;
 
-  // Puzzle (L2), choice (L3)
+  // Puzzle (L2)
   private puzzleDone = false;
-  private sacrificing = false; private transitioning = false;
+  private transitioning = false;
   private levPulseTimer = 8000; private levBlocked = false;
+
+  // Discovery sequence state
+  private discoveryPhase: "vitals" | "farewell" | "memory" | "done" = "done";
+  private discoveryTimer = 0;
+  private discoverySurvivor: "sara" | "noah" | "mia" = "sara";
+  private discoveryFarewellMsg = "";
+  private discoveryPodAfter: (() => void) | null = null;
+  private memoryFlashAlpha = 0;
+  private memoryFlashPhase: "in" | "hold" | "out" = "in";
+
+  // Collapse ending state
+  private collapseTimer = 0;
+  private collapseWhite = 0;
 
   // Analog dashboard state
   private hullIntegrity = 100;
@@ -2279,8 +2560,9 @@ class EchoesGame {
 
     // Scene
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x020a0e);
-    this.scene.fog = new THREE.FogExp2(0x020a0e, 0.10);
+    this.scene.background = new THREE.Color(0x03111e);
+    // Lighter fog — deep ocean is dimly visible, not pitch black
+    this.scene.fog = new THREE.FogExp2(0x03111e, 0.055);
 
     // Camera
     this.camera = new THREE.PerspectiveCamera(75, GAME_W / GAME_H, 0.05, 500);
@@ -2291,13 +2573,16 @@ class EchoesGame {
     this.sceneGroup = new THREE.Group();
     this.scene.add(this.sceneGroup);
 
-    // Murky baseline ambient + hemisphere so the world is faintly visible everywhere
-    this.scene.add(new THREE.AmbientLight(0x223344, 0.35));
-    this.scene.add(new THREE.HemisphereLight(0x355577, 0x06101a, 0.55));
+    // Stronger ambient so the ocean floor and walls are faintly readable without sonar
+    this.scene.add(new THREE.AmbientLight(0x2255aa, 0.72));
+    this.scene.add(new THREE.HemisphereLight(0x4477cc, 0x061828, 0.92));
+    // Deep blue rim light from below — bioluminescent ocean floor glow
+    const floorGlow = new THREE.PointLight(0x0044aa, 0.55, 40);
+    floorGlow.position.set(0, -3, 0);
+    this.scene.add(floorGlow);
 
-    // Sub headlight — forward-facing spotlight parented to the camera (porthole view)
-    // Cookie texture gives uneven, water-distorted beam; sharp quadratic falloff
-    const headlight = new THREE.SpotLight(0xCCE6FF, 6.0, 18, Math.PI / 4.5, 0.4, 2);
+    // Sub headlight — wider beam, longer throw for forward tunnel vision
+    const headlight = new THREE.SpotLight(0xCCEEFF, 7.5, 26, Math.PI / 3.8, 0.35, 1.8);
     headlight.position.set(0, 0, 0);
     headlight.target.position.set(0, 0, -1);
     this.headlightCookie = makeAnimatedHeadlightCookie();
@@ -2350,28 +2635,20 @@ class EchoesGame {
       this.keys[e.code] = true;
       this.ensureAudio();
       if (this.state === "MENU" && (e.code === "Space" || e.code === "Enter")) this.startGame();
-      if ((this.state === "CUTSCENE" || this.state === "ENDING_A" || this.state === "ENDING_B") &&
-          (e.code === "Space" || e.code === "Enter")) this.advanceCS();
+      if (this.state === "CUTSCENE" && (e.code === "Space" || e.code === "Enter")) this.advanceCS();
       if (this.state === "GAME_OVER" && e.code === "Space") this.loadLevel(this.lvlIdx);
       if (this.state === "PLAYING") {
         if (e.code === "KeyF") this.dropFlare();
         if (e.code === "KeyE") this.interact();
       }
-      if (this.state === "CHOICE") {
-        if (e.code === "KeyE") this.makeChoice("A");
-        if (e.code === "KeyQ") this.makeChoice("B");
-        if (e.code === "KeyR") this.makeChoice("BOTH");
-      }
     });
     window.addEventListener("keyup", (e) => { this.keys[e.code] = false; });
 
+    // Mouse look — drag mouse to steer the submarine (yaw only; pitch is physics-driven)
     this.threeCanvas.addEventListener("mousemove", (e) => {
-      if (this.state === "PLAYING" || this.state === "CHOICE") {
-        this.yaw -= e.movementX * MOUSE_SENS;
-        // Mouse up = look up, mouse down = look down (standard FPS)
-        this.pitch -= e.movementY * MOUSE_SENS;
-        this.pitch = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, this.pitch));
-      }
+      if (this.state !== "PLAYING" || !this.mouseHeld) return;
+      const sens = 0.0018;
+      this.yaw -= e.movementX * sens;
     });
 
     this.threeCanvas.addEventListener("mousedown", () => {
@@ -2379,7 +2656,7 @@ class EchoesGame {
       this.mouseHeld = true;
       this.mouseDownAt = Date.now();
       if (this.state === "MENU") this.startGame();
-      if (this.state === "CUTSCENE" || this.state === "ENDING_A" || this.state === "ENDING_B") this.advanceCS();
+      if (this.state === "CUTSCENE") this.advanceCS();
     });
 
     this.threeCanvas.addEventListener("mouseup", () => {
@@ -2395,6 +2672,10 @@ class EchoesGame {
     if (this.audioReady) return;
     this.audio.init(); this.audio.resume(); this.audio.startBreathing();
     this.audio.initHullStress();
+    // Lullaby is a constant background thread throughout the whole game — barely audible.
+    // It was always playing. Level 4 proximity reveals it for what it is.
+    this.audio.startLullaby();
+    this.audio.setLullabyGain(0.025);
     this.audioReady = true;
   }
 
@@ -2411,11 +2692,13 @@ class EchoesGame {
     // Reset 2D state
     this.px = def.playerStart.x; this.py = def.playerStart.y;
     this.pvx = this.pvy = 0;
-    this.o2 = def.o2Start; this.flares = 3;
+    this.o2 = def.o2Start; this.flares = def.flares ?? 3;
     this.invTimer = 0; this.glitchTimer = 0;
     this.noise = 0; this.alarmTimer = 0; this.lvlTime = 0;
     this.pings = []; this.flareObjs = [];
-    this.puzzleDone = false; this.sacrificing = false; this.transitioning = false;
+    this.puzzleDone = false; this.transitioning = false;
+    this.discoveryPhase = "done"; this.discoveryTimer = 0; this.discoveryPodAfter = null;
+    this.collapseTimer = 0; this.collapseWhite = 0;
     this.hullIntegrity = 100; this.hullInDanger = false; this.sonarCharge = 100;
     this.hullDamageCooldown = 0; this.shakeTimer = 0; this.shakeIntensity = 0; this.shakeDuration = 160;
     this.gameOverReason = "oxygen";
@@ -2435,17 +2718,17 @@ class EchoesGame {
     this.dlgQueue = [...def.dialogue];
 
     this.camX = def.playerStart.x; this.camY = def.playerStart.y;
-    this.yaw = Math.PI;   // face +Z (into tunnel)
+    this.yaw = AUTO_FORWARD_YAW;
     this.pitch = 0;
     this.smoothFwd = 0; this.smoothSide = 0;
-    this.prevYaw = Math.PI;
-    this.cameraRoll = 0; this.cameraPitchOff = 0;
+    this.prevYaw = AUTO_FORWARD_YAW;
+    this.cameraRoll = 0; this.cameraPitchOff = 0; this.subVertOff = 0;
 
     // Reset hull stress state for new level
     this.hullStressTier = -1;
     this.hullStressTimer = 0;
     this.sharpTurnCooldown = 0;
-    this.lastYawStress = Math.PI;
+    this.lastYawStress = AUTO_FORWARD_YAW;
     this.hullGainRampTimer = 0;
 
     // Show level-transition screen immediately so the user sees something
@@ -2504,6 +2787,8 @@ class EchoesGame {
         uPingOrigin:  { value: Array.from({ length: 5 }, () => new THREE.Vector3()) },
         uPingRadius:  { value: [0, 0, 0, 0, 0] },
         uPingOpacity: { value: [0, 0, 0, 0, 0] },
+        // Per-ping sonar colour: small=cyan, large=bright-blue, flare=orange, boost=gray
+        uPingColor: { value: Array.from({ length: 5 }, () => new THREE.Vector3(0.04, 0.92, 1.0)) },
       },
     });
     const omat = this.sonarOverlayMat;
@@ -2566,18 +2851,22 @@ class EchoesGame {
     // RESEARCH VESSEL ODYSSEY — featured wreck in level 1 (matches reference image)
     if (def.id === 1) {
       const ship = buildOdysseyShip();
-      ship.position.set(400 * WS, 0.05, 2620 * WS);
-      ship.rotation.y = -0.15;
+      ship.position.set(1400 * WS, 0.05, 820 * WS);
+      ship.rotation.y = 0.22;
       this.sceneGroup.add(ship);
+      // Register ship geometry with the sonar overlay so it lights up on a ping
+      ship.traverse(child => {
+        if (child instanceof THREE.Mesh) addOverlay(child);
+      });
       const bulkLabel = makeBillboard("DATA BULKHEAD", "#FFAA22", 4, 0.9);
       bulkLabel.material.opacity = 0.85;
-      bulkLabel.position.set(400 * WS + 0.6, 1.4, 2620 * WS + 1.2);
+      bulkLabel.position.set(1400 * WS + 0.6, 1.4, 820 * WS + 1.2);
       this.sceneGroup.add(bulkLabel);
       const bulkCube = new THREE.Mesh(
         new THREE.BoxGeometry(0.3, 0.45, 0.2),
         new THREE.MeshBasicMaterial({ color: 0xFFAA22, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending }),
       );
-      bulkCube.position.set(400 * WS + 0.6, 0.9, 2620 * WS + 1.0);
+      bulkCube.position.set(1400 * WS + 0.6, 0.9, 820 * WS + 1.0);
       this.sceneGroup.add(bulkCube);
       const bulkLight = new THREE.PointLight(0xFF9911, 1.6, 6);
       bulkLight.position.copy(bulkCube.position);
@@ -2606,10 +2895,17 @@ class EchoesGame {
       this.enemyObjs.push({ group: built.group, mats: built.mats, label, labelMat: label.material as THREE.SpriteMaterial, jitterTimer: 0 });
     }
 
-    // Lifepods — labelled with character name
+    // Lifepods — per-survivor orientation
     for (const pod of this.pods) {
       const pobj = buildPodMesh();
       pobj.group.position.set(pod.x * WS, EYE_H * 0.6, pod.y * WS);
+      if (pod.id === "sara") {
+        pobj.group.rotation.z = 0.26; pobj.group.rotation.x = 0.08; // tilted, pinned
+      } else if (pod.id === "noah") {
+        pobj.group.rotation.y = 0.35; // wedged upright
+      } else if (pod.id === "mia") {
+        pobj.group.position.y = EYE_H * 0.15; pobj.group.rotation.x = -0.12; // on floor
+      }
       const label = makeBillboard(`${pod.character} — LIFEPOD`, "#22FFAA", 4.2, 0.95);
       label.position.set(0, 2.2, 0);
       pobj.group.add(label);
@@ -2655,14 +2951,25 @@ class EchoesGame {
     // ── Add scatter meshes + overlay twins ────────────────────────────────────
     // LineSegments (EdgesGeometry reveals) are skipped — the shader handles all
     // terrain reveal.  revealEntries are not pushed to revealObjs for the same reason.
+    //
+    // Level 1 is a cave tunnel (y=700–1300).  Scatter collision rects that cross
+    // the main corridor are dropped so they never block the player's path.
+    // Scatter *meshes* are kept — they decorate the cave walls visually.
+    const TUNNEL_Y1 = 720, TUNNEL_Y2 = 1280; // passable corridor band
     for (const sr of [rocksR, wallsR, debrisR, platformsR]) {
       for (const mesh of sr.meshes) {
         if (mesh instanceof THREE.LineSegments) continue; // shader handles terrain
         this.sceneGroup.add(mesh);
         addOverlay(mesh as THREE.Mesh);
       }
-      for (const rect of sr.rects) def.obstacles.push(rect);
+      for (const rect of sr.rects) {
+        // Drop scatter obstacle rects that would block the main tunnel on Level 1
+        if (def.id === 1 && rect.y < TUNNEL_Y2 && rect.y + rect.h > TUNNEL_Y1) continue;
+        def.obstacles.push(rect);
+      }
     }
+
+    // Lullaby is already running from ensureAudio — level 4 proximity will raise the gain
 
     // Transition to PLAYING after the async scatter is done
     this.state = "PLAYING";
@@ -2674,7 +2981,7 @@ class EchoesGame {
   private emitSonar(type: "small" | "large") {
     if (this.levBlocked) { this.showSub("[ LEVIATHAN PULSE — SONAR DISRUPTED ]"); return; }
     const maxR = type === "small" ? SONAR_SMALL_R : SONAR_LARGE_R;
-    const speed = type === "small" ? 210 : 290;
+    const speed = type === "small" ? 240 : 520; // large ping sweeps whole map in ~7 s
     this.noise = Math.min(100, this.noise + (type === "small" ? SONAR_SMALL_NOISE : SONAR_LARGE_NOISE));
     this.audio.sonar(type);
     this.sonarCharge = Math.max(0, this.sonarCharge - (type === "small" ? 25 : 50));
@@ -2784,7 +3091,6 @@ class EchoesGame {
         if (this.lvlDef?.id === 2 && p.id === "noah" && !this.puzzleDone) {
           this.showSub("[ DEBRIS FIELD BLOCKING — SILENCE ALL NOISE SOURCES FIRST ]"); return;
         }
-        if (this.lvlDef?.id === 3) { this.state = "CHOICE"; return; }
         this.dockPod(p); return;
       }
     }
@@ -2792,10 +3098,31 @@ class EchoesGame {
 
   private dockPod(pod: Lifepod) {
     pod.rescued = true;
-    this.o2 = Math.min(100, this.o2 + 20);
-    this.showSub(pod.commsLine);
+    this.transitioning = true;
     this.audio.dock();
-    if (this.pods.every(p => p.rescued)) { this.transitioning = true; setTimeout(() => this.completeLevel(), 2200); }
+    setTimeout(() => { this.audio.flatline(); }, 800);
+    const survivor = pod.id as "sara" | "noah" | "mia";
+    // Mia dock audio is handled AFTER eliasReactionMia fires (in updateDiscovery vitals→farewell)
+    const farewellMap: Record<string, string> = {
+      sara: '"Come home, Eli."',
+      noah: '"Love You Dad."',
+      mia:  '"I Will Miss You Dad."',
+    };
+    this.triggerDiscovery(survivor, farewellMap[survivor] ?? pod.commsLine, () => {
+      if (this.pods.every(p => p.rescued)) this.completeLevel();
+      else { this.transitioning = false; this.state = "PLAYING"; }
+    });
+  }
+
+  private triggerDiscovery(survivor: "sara" | "noah" | "mia", farewell: string, after: () => void) {
+    this.discoverySurvivor = survivor;
+    this.discoveryFarewellMsg = farewell;
+    this.discoveryPodAfter = after;
+    this.discoveryPhase = "vitals";
+    this.discoveryTimer = 2800;
+    this.state = "DISCOVERY";
+    // Cold system log fires immediately regardless of discovery phase
+    this.showSub("SYSTEM: Survivor recovered.", 3500);
   }
 
   private checkPuzzle() {
@@ -2806,8 +3133,13 @@ class EchoesGame {
   }
 
   private completeLevel() {
-    if (this.lvlIdx === 0) this.startCS(CS1, () => this.showLevelTransition(1, () => this.loadLevel(1)));
-    else if (this.lvlIdx === 1) this.startCS(CS2, () => this.showLevelTransition(2, () => this.loadLevel(2)));
+    if (this.lvlIdx === 0) {
+      this.startCS(CS_SARA_TO_NOAH, () => this.showLevelTransition(1, () => this.loadLevel(1)));
+    } else if (this.lvlIdx === 1) {
+      this.startCS(CS_NOAH_TO_MIA, () => this.showLevelTransition(2, () => this.loadLevel(2)));
+    } else if (this.lvlIdx === 2) {
+      this.beginCollapse();
+    }
   }
 
   private showLevelTransition(nextIdx: number, cb: () => void) {
@@ -2817,20 +3149,12 @@ class EchoesGame {
     this.state = "LEVEL_TRANSITION";
   }
 
-  private makeChoice(c: "A" | "B" | "BOTH") {
-    this.state = "PLAYING"; this.transitioning = true;
-    if (c === "BOTH") {
-      this.sacrificing = true;
-      this.showSub('Elias: "Rerouting suit oxygen... Locking both pods in."');
-      for (const p of this.pods) p.rescued = true;
-      setTimeout(() => { this.audio.flatline(); this.state = "ENDING_B"; this.startCS(END_B, () => { this.state = "MENU"; }); }, 3000);
-    } else {
-      const podId = c === "A" ? "liam" : "mia";
-      const pod = this.pods.find(p => p.id === podId)!;
-      pod.rescued = true; this.audio.dock();
-      this.showSub(`Elias: "Docking with ${pod.character}'s pod. Oxygen critical."`);
-      setTimeout(() => { this.state = "ENDING_A"; this.startCS(END_A, () => { this.state = "MENU"; }); }, 3000);
-    }
+  private beginCollapse() {
+    this.state = "COLLAPSE";
+    this.collapseTimer = 0;
+    this.collapseWhite = 0;
+    // Mute all game audio and leave only the ventilator — one sound, alone
+    if (this.audioReady) this.audio.collapseAudio();
   }
 
   private triggerGameOver() {
@@ -2845,6 +3169,7 @@ class EchoesGame {
     this.csPanels = panels; this.csPanelIdx = 0;
     this.csTextLen = 0; this.csTextTimer = 0;
     this.csPhase = "typing"; this.csCallback = cb;
+    this.state = "CUTSCENE";
   }
 
   private advanceCS() {
@@ -2867,10 +3192,10 @@ class EchoesGame {
   // UPDATE
   // ============================================================
   private update(dt: number) {
-    const isCS = this.state === "CUTSCENE" || this.state === "ENDING_A" || this.state === "ENDING_B";
     if (this.state === "MENU" || this.state === "GAME_OVER") return;
-    if (isCS) { this.updateCS(dt); return; }
-    if (this.state === "CHOICE") { this.updatePings3D(dt); return; }
+    if (this.state === "CUTSCENE") { this.updateCS(dt); return; }
+    if (this.state === "DISCOVERY") { this.updateDiscovery(dt); this.updatePings3D(dt); return; }
+    if (this.state === "COLLAPSE") { this.updateCollapse(dt); return; }
     if (this.state === "LEVEL_TRANSITION") {
       const elapsed = Date.now() - this.transitionStartMs;
       if (elapsed >= this.transitionDurationMs && this.transitionCallback) {
@@ -2902,6 +3227,92 @@ class EchoesGame {
     this.updateHullStress(dt);
     if (this.subTimer > 0) this.subTimer -= dt;
     if (this.glitchTimer > 0) this.glitchTimer -= dt;
+    if (this.lvlIdx === 2) this.updateLullaby();
+  }
+
+  private miaProximity = 0; // 0..1, drives Level 4 glitch intensity
+
+  private updateLullaby() {
+    const miaPod = this.pods.find(p => p.id === "mia");
+    if (!miaPod || miaPod.rescued) { this.miaProximity = 0; return; }
+    const dist = Math.hypot(miaPod.x - this.px, miaPod.y - this.py);
+    this.audio.setLullabyGain(Math.max(0, 1 - dist / 600) * 0.65);
+    this.miaProximity = dist < 450 ? 1 - dist / 450 : 0;
+    if (this.miaProximity > 0 && Math.random() < this.miaProximity * 0.09) {
+      this.glitchTimer = Math.max(this.glitchTimer, 150 + this.miaProximity * 500);
+    }
+  }
+
+  private updateDiscovery(dt: number) {
+    const farewellTime = this.discoverySurvivor === "mia" ? 5000 : 3000;
+    const memoryTime   = this.discoverySurvivor === "mia" ? 10000 : 8000; // 1s black + 1.5s in + hold + 2s out
+
+    this.discoveryTimer -= dt;
+    if (this.discoveryTimer <= 0) {
+      if (this.discoveryPhase === "vitals") {
+        if (this.audioReady) {
+          if (this.discoverySurvivor === "sara") this.audio.eliasReactionSara();
+          else if (this.discoverySurvivor === "noah") {
+            this.audio.eliasReactionNoah();
+            // Noah comms — teenage voice heard through the pod speaker
+            this.showSub('COMMS: "Dad? Is that you?"', 4000);
+          } else {
+            // Mia: fire reaction first (routes through master), then mute master after scream
+            this.audio.eliasReactionMia();
+            setTimeout(() => { if (this.audioReady) this.audio.miaDockedAudio(); }, 1200);
+          }
+        }
+        this.discoveryPhase = "farewell";
+        this.discoveryTimer = farewellTime;
+      } else if (this.discoveryPhase === "farewell") {
+        this.discoveryPhase = "memory";
+        this.discoveryTimer = memoryTime;
+        this.memoryFlashAlpha = 0;
+        this.memoryFlashPhase = "in";
+        if (this.lvlIdx === 2) this.audio.setLullabyGain(0);
+        // Ambient starts after 1s black silence window
+        if (this.audioReady) {
+          const survivor = this.discoverySurvivor;
+          setTimeout(() => {
+            if (!this.audioReady) return;
+            if (survivor === "sara") this.audio.saraMemoryAudio();
+            else if (survivor === "noah") this.audio.noahMemoryAudio();
+            else if (survivor === "mia") this.audio.miaMemoryAudio();
+          }, 1000);
+        }
+      } else if (this.discoveryPhase === "memory") {
+        this.discoveryPhase = "done";
+        const cb = this.discoveryPodAfter;
+        this.discoveryPodAfter = null;
+        cb?.();
+      }
+    }
+    if (this.discoveryPhase === "memory") {
+      // Structure: 1000ms black silence → 1500ms fade in → hold → 1200ms fade out
+      const elapsed = memoryTime - this.discoveryTimer;
+      const BLACK_END = 1000, FADE_IN_END = 2500, FADE_OUT_START = memoryTime - 1200;
+      if (elapsed < BLACK_END) {
+        this.memoryFlashPhase = "in";
+        this.memoryFlashAlpha = 0;
+      } else if (elapsed < FADE_IN_END) {
+        this.memoryFlashPhase = "in";
+        this.memoryFlashAlpha = (elapsed - BLACK_END) / (FADE_IN_END - BLACK_END);
+      } else if (elapsed < FADE_OUT_START) {
+        this.memoryFlashPhase = "hold";
+        this.memoryFlashAlpha = 1;
+      } else {
+        this.memoryFlashPhase = "out";
+        this.memoryFlashAlpha = 1 - (elapsed - FADE_OUT_START) / 1200;
+      }
+      this.memoryFlashAlpha = Math.max(0, Math.min(1, this.memoryFlashAlpha));
+    }
+  }
+
+  private updateCollapse(dt: number) {
+    this.collapseTimer += dt;
+    const pct = Math.min(1, this.collapseTimer / 8000);
+    this.glitchTimer = 300;
+    this.collapseWhite = pct > 0.65 ? Math.min(1, (pct - 0.65) / 0.35) : 0;
   }
 
   private updateDialogue() {
@@ -2918,43 +3329,34 @@ class EchoesGame {
     const dtS = dt / 1000;
     const boosting = this.keys["ShiftLeft"] || this.keys["ShiftRight"];
 
-    // ── Step 1: Raw key input axes ([-1, 0, 1]) ──
+    // ── Raw key input axes ──
     const rawFwd  = (this.keys["KeyW"] || this.keys["ArrowUp"]    ? 1 : 0)
                   - (this.keys["KeyS"] || this.keys["ArrowDown"]  ? 1 : 0);
     const rawSide = (this.keys["KeyD"] || this.keys["ArrowRight"] ? 1 : 0)
                   - (this.keys["KeyA"] || this.keys["ArrowLeft"]  ? 1 : 0);
 
-    // ── Step 2: Input smoothing — lerp toward raw each frame ──
-    // Scale lerp rate to be frame-rate independent (~0.12 per 1/60 s frame)
+    // ── Input smoothing ──
     const smoothRate = 1 - Math.pow(1 - INPUT_SMOOTH_K, dtS * 60);
     this.smoothFwd  += (rawFwd  - this.smoothFwd)  * smoothRate;
     this.smoothSide += (rawSide - this.smoothSide) * smoothRate;
 
-    // ── Step 3: Direction vectors from current yaw ──
-    // forward3D = (-sin(yaw), 0, -cos(yaw)); mapped to 2D: fwdX, fwdY
+    // ── Direction vectors from current yaw ──
     const fwdX =  -Math.sin(this.yaw);
     const fwdY =  -Math.cos(this.yaw);
     const rgtX =   Math.cos(this.yaw);
     const rgtY =  -Math.sin(this.yaw);
 
-    // ── Step 4: Apply force from smoothed input ──
+    // ── Apply force from smoothed input ──
     const spd = PLAYER_SPEED * (boosting ? PLAYER_BOOST_MULT : 1);
     const forceX = (fwdX * this.smoothFwd + rgtX * this.smoothSide) * spd;
     const forceY = (fwdY * this.smoothFwd + rgtY * this.smoothSide) * spd;
     this.pvx += forceX * dtS;
     this.pvy += forceY * dtS;
 
-    // ── Step 5: Non-linear drag — base drag + speed-squared term ──
-    const speed = Math.hypot(this.pvx, this.pvy);
-    const dragRate = FLUID_BASE_DRAG + FLUID_SPEED_DRAG * speed * speed;
-    const dragFactor = Math.max(0, 1 - dragRate * dtS);
-    this.pvx *= dragFactor;
-    this.pvy *= dragFactor;
-
-    // Boost noise while sprinting with input
+    // Sprinting adds noise
     if (boosting && (rawFwd || rawSide)) this.noise = Math.min(100, this.noise + 2.5 * dtS);
 
-    // Boost auto-ping: while shift held, fire a dim ping every 2 s
+    // Boost auto-ping: while shift held, brief sonar dim-ping every 2 s
     if (boosting) {
       this.boostPingCooldown -= dt;
       if (this.boostPingCooldown <= 0) {
@@ -2965,6 +3367,13 @@ class EchoesGame {
     } else {
       this.boostPingCooldown = 0;
     }
+
+    // ── Non-linear drag ──
+    const speed = Math.hypot(this.pvx, this.pvy);
+    const dragRate = FLUID_BASE_DRAG + FLUID_SPEED_DRAG * speed * speed;
+    const dragFactor = Math.max(0, 1 - dragRate * dtS);
+    this.pvx *= dragFactor;
+    this.pvy *= dragFactor;
 
     const nx = this.px + this.pvx * dtS;
     const ny = this.py + this.pvy * dtS;
@@ -3051,8 +3460,10 @@ class EchoesGame {
       const e = this.enemies[i];
       if (e.visTimer > 0) e.visTimer -= dt;
       const dist = Math.hypot(e.x - this.px, e.y - this.py);
-      if (this.noise >= 61 && dist < 700) e.state = "hunt";
-      else if (this.noise >= 31 && dist < 500) e.state = "alert";
+      const hearingDist = e.hearingDist ?? 700;
+      const alertDist   = e.alertDist   ?? 500;
+      if (this.noise >= 61 && dist < hearingDist) e.state = "hunt";
+      else if (this.noise >= 31 && dist < alertDist) e.state = "alert";
       else e.state = "patrol";
 
       let tx: number, ty: number, sm = 1;
@@ -3157,7 +3568,7 @@ class EchoesGame {
         const d = Math.hypot(ro.cx - p.x, ro.cy - p.y);
         if (d >= inner && d <= outer) {
           p.paintedObjects.add(ri);
-          const dur = 3000;
+          const dur = p.type === "large" ? 12000 : 9000;
           const tint = p.type === "flare" ? 0xFF8C00 : 0x22BBFF;
           ro.fadeTimer = dur;
           ro.fadeDuration = dur;
@@ -3176,8 +3587,8 @@ class EchoesGame {
           const isNew = !p.paintedEnemies.has(ei);
           if (isNew) {
             p.paintedEnemies.add(ei);
-            // Enemy fade: 1.5 s vis timer (consistent with spec)
-            e.visTimer = 1500;
+            // Enemy fade: 5 s vis timer — long enough to plan an avoidance route
+            e.visTimer = 5000;
             // Enemy special reveal: red flash on all materials
             if (ei < this.enemyObjs.length) {
               const eobj = this.enemyObjs[ei];
@@ -3210,7 +3621,7 @@ class EchoesGame {
         const pd = Math.hypot(pod.x - p.x, pod.y - p.y);
         if (pd >= inner - 20 && pd <= outer + 20 && !p.paintedPods.has(pi)) {
           p.paintedPods.add(pi);
-          pod.revealTimer = p.type === "small" ? 3800 : 6000;
+          pod.revealTimer = p.type === "small" ? 10000 : 14000;
           if (pi < this.podObjs.length) this.podObjs[pi].group.visible = true;
         }
       }
@@ -3220,7 +3631,7 @@ class EchoesGame {
         const o = this.noiseObjs[ni];
         if (o.silenced) continue;
         const od = Math.hypot(o.x - p.x, o.y - p.y);
-        if (od >= inner - 18 && od <= outer + 18) o.revealTimer = 3200;
+        if (od >= inner - 18 && od <= outer + 18) o.revealTimer = 9000;
       }
 
       // ── Sync radius to matching 3D ring (arrays are kept in lock-step) ──
@@ -3264,7 +3675,6 @@ class EchoesGame {
   }
 
   private updateO2(dt: number) {
-    if (this.sacrificing) return;
     const boosting = this.keys["ShiftLeft"] || this.keys["ShiftRight"];
     const mv = Object.keys(this.keys).some(k => this.keys[k] && ["KeyW","KeyS","KeyA","KeyD","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(k));
     const drain = (boosting && mv) ? O2_DRAIN_BOOST : O2_DRAIN_NORMAL;
@@ -3306,19 +3716,23 @@ class EchoesGame {
     const origins = u.uPingOrigin.value  as THREE.Vector3[];
     const radii   = u.uPingRadius.value  as number[];
     const ops     = u.uPingOpacity.value as number[];
+    const colors  = u.uPingColor.value   as THREE.Vector3[];
     for (let i = 0; i < 5; i++) {
       if (i < this.pings.length) {
         const p = this.pings[i];
         origins[i].set(p.x * WS, EYE_H, p.y * WS);
         radii[i] = p.radius * WS;
-        // Flat-top decay: stays near 1.0 for the first ~75% of the ping's
-        // life (ring sweeping out), then drops sharply near the end so the
-        // grid lingers long after the ring passes a surface.
         ops[i]   = Math.max(0, 1.0 - Math.pow(p.radius / p.maxRadius, 5.0));
+        // Sonar colour varies by ping type for visual differentiation
+        if (p.type === "flare")       colors[i].set(1.0, 0.55, 0.0);  // orange
+        else if (p.type === "large")  colors[i].set(0.15, 0.98, 1.0); // brighter cyan
+        else if (p.type === "boost")  colors[i].set(0.45, 0.45, 0.45); // dim gray
+        else                          colors[i].set(0.04, 0.92, 1.0);  // small — standard cyan
       } else {
         origins[i].set(0, 0, 0);
-        radii[i] = -1; // mark inactive
+        radii[i] = -1;
         ops[i]   = 0;
+        colors[i].set(0.04, 0.92, 1.0);
       }
     }
   }
@@ -3989,16 +4403,24 @@ class EchoesGame {
     // Clear HUD canvas every frame
     this.hudCtx.clearRect(0, 0, GAME_W, GAME_H);
 
-    const isCS = this.state === "CUTSCENE" || this.state === "ENDING_A" || this.state === "ENDING_B";
-
     if (this.state === "MENU") {
       this.renderer.render(this.scene, this.camera);
       this.renderMenu();
       return;
     }
-    if (isCS) {
+    if (this.state === "CUTSCENE") {
       this.renderer.render(this.scene, this.camera);
       this.renderCS();
+      return;
+    }
+    if (this.state === "DISCOVERY") {
+      this.renderer.render(this.scene, this.camera);
+      this.renderDiscovery();
+      return;
+    }
+    if (this.state === "COLLAPSE") {
+      this.renderer.render(this.scene, this.camera);
+      this.renderCollapse();
       return;
     }
     if (this.state === "GAME_OVER") {
@@ -4012,7 +4434,7 @@ class EchoesGame {
       return;
     }
 
-    // Update camera from 2D position + buoyancy Y drift + roll/pitch offsets
+    // Update camera from 2D position + buoyancy Y drift
     const buoyancyY = BUOY_AMP * Math.sin(BUOY_FREQ * this.lvlTime);
     this.camera.position.set(this.px * WS, EYE_H + buoyancyY, this.py * WS);
     this.camera.rotation.y = this.yaw;
@@ -4139,7 +4561,6 @@ class EchoesGame {
     // HUD overlay
     this.renderHUD();
     if (this.glitchTimer > 0) this.renderGlitch();
-    if (this.state === "CHOICE") this.renderChoice();
   }
 
   // ============================================================
@@ -4224,7 +4645,7 @@ class EchoesGame {
       if (e.visTimer <= 0) continue;
       const dotX = wx(e.x);
       const dotY = wy(e.y);
-      const a = Math.min(1, e.visTimer / 1500) * 0.9;
+      const a = Math.min(1, e.visTimer / 5000) * 0.9;
       ctx.fillStyle   = `rgba(255,50,50,${a.toFixed(3)})`;
       ctx.shadowColor = `rgba(255,50,50,0.7)`;
       ctx.shadowBlur  = 5;
@@ -4260,7 +4681,7 @@ class EchoesGame {
   }
 
   private renderHUD() {
-    if (this.state !== "PLAYING" && this.state !== "CHOICE") return;
+    if (this.state !== "PLAYING") return;
     const ctx = this.hudCtx;
     const glitch = this.glitchTimer > 0;
     const gx = glitch ? (Math.random() - 0.5) * 8 : 0;
@@ -4274,6 +4695,46 @@ class EchoesGame {
 
     // Analog cockpit dashboard (bottom 22% of screen)
     this.renderAnalogDashboard();
+
+    // Pod bearing indicator — top-right corner
+    const unreachedPods = this.pods.filter(p => !p.rescued);
+    if (unreachedPods.length > 0) {
+      const nearestPod = unreachedPods.reduce((a, b) =>
+        Math.hypot(a.x - this.px, a.y - this.py) < Math.hypot(b.x - this.px, b.y - this.py) ? a : b
+      );
+      const dx = nearestPod.x - this.px;
+      const dy = nearestPod.y - this.py;
+      const dist = Math.hypot(dx, dy);
+      const bearingRad = Math.atan2(dx, -dy);
+      const bearingDeg = Math.round(((bearingRad * 180 / Math.PI) + 360) % 360);
+      const bearingStr = bearingDeg.toString().padStart(3, "0");
+      const distM = Math.round(dist / 10) * 10;
+
+      const bx = GAME_W - 152 + gx;
+      const by = 14 + gy;
+      ctx.fillStyle = "rgba(0,14,30,0.70)";
+      ctx.fillRect(bx - 6, by, 146, 62);
+      ctx.strokeStyle = "rgba(0,200,230,0.38)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(bx - 6, by, 146, 62);
+
+      ctx.fillStyle = "rgba(0,200,230,0.60)";
+      ctx.font = "9px monospace";
+      ctx.textAlign = "left";
+      ctx.fillText(`POD SIGNAL — ${nearestPod.character}`, bx, by + 13);
+
+      ctx.fillStyle = "#00EEFF";
+      ctx.shadowColor = "#00EEFF";
+      ctx.shadowBlur = 8;
+      ctx.font = "bold 20px monospace";
+      ctx.fillText(`BRG ${bearingStr}\u00B0`, bx, by + 38);
+      ctx.shadowBlur = 0;
+
+      ctx.fillStyle = "rgba(0,200,230,0.55)";
+      ctx.font = "10px monospace";
+      ctx.fillText(`${distM}m`, bx + 86, by + 38);
+      ctx.fillText(`\u25B6 ${nearestPod.character}`, bx, by + 54);
+    }
 
     if (this.nearPod) this.renderPrompt(`[E] DOCK — ${this.nearPod.character}'S POD`);
     else if (this.nearNoise) this.renderPrompt("[E] SILENCE NOISE SOURCE");
@@ -4363,26 +4824,461 @@ class EchoesGame {
   }
 
   // ============================================================
-  // CHOICE SCREEN
+  // DISCOVERY SCREEN
   // ============================================================
-  private renderChoice() {
+  private renderDiscovery() {
     const ctx = this.hudCtx;
-    ctx.fillStyle = "rgba(0,0,0,0.78)"; ctx.fillRect(0, 0, GAME_W, GAME_H);
-    const px = 180, py = 155, pw = GAME_W - 360, ph = GAME_H - 310;
-    ctx.fillStyle = "rgba(0,0,20,0.94)"; ctx.fillRect(px, py, pw, ph);
-    ctx.strokeStyle = "#00FFFF"; ctx.lineWidth = 2; ctx.strokeRect(px, py, pw, ph);
-    ctx.fillStyle = "#FF3333"; ctx.font = "bold 15px monospace"; ctx.textAlign = "center";
-    ctx.fillText("⚠  OXYGEN CRITICAL  —  DECISION REQUIRED  ⚠", GAME_W / 2, py + 42);
-    ctx.fillStyle = "rgba(255,255,255,0.75)"; ctx.font = "13px monospace";
-    ctx.fillText("Two lifepods detected. Oxygen insufficient for sequential rescue.", GAME_W / 2, py + 74);
-    ctx.fillStyle = "#00FF88"; ctx.font = "14px monospace";
-    ctx.fillText("[E]  DOCK WITH POD A — Save LIAM   (oxygen: ~12%)", GAME_W / 2, py + 120);
-    ctx.fillText("[Q]  DOCK WITH POD B — Save MIA    (oxygen: ~12%)", GAME_W / 2, py + 156);
-    ctx.fillStyle = "#FFD700";
-    ctx.fillText("[R]  REROUTE SUIT OXYGEN — Save BOTH  (Elias will not survive)", GAME_W / 2, py + 206);
-    ctx.fillStyle = "rgba(255,255,255,0.38)"; ctx.font = "11px monospace";
-    ctx.fillText('LIAM  (Pod A)  — Age 7 — "It\'s dark. I don\'t like the dark."', GAME_W / 2, py + 250);
-    ctx.fillText('MIA   (Pod B)  — Age 5 — "The fishies are sleeping. Are you sleeping too?"', GAME_W / 2, py + 272);
+    const t = Date.now() / 1000;
+
+    if (this.discoveryPhase === "memory") {
+      this.renderMemoryFlash();
+      return;
+    }
+
+    // Survivor labels — face is always blurred, identity hidden from Elias
+    const survivorLabel: Record<string, string> = { sara: "Survivor One", noah: "Survivor Two", mia: "Survivor Three" };
+    const survivorNum = survivorLabel[this.discoverySurvivor ?? ""] ?? "Survivor";
+    const farewellTime = this.discoverySurvivor === "mia" ? 5000 : 3000;
+
+    ctx.fillStyle = "rgba(0,0,0,0.94)"; ctx.fillRect(0, 0, GAME_W, GAME_H);
+
+    const CW = 620, CH = 300;
+    const CX = GAME_W / 2 - CW / 2, CY = GAME_H / 2 - CH / 2 - 30;
+
+    ctx.fillStyle = "rgba(0,4,14,0.97)"; ctx.fillRect(CX, CY, CW, CH);
+    ctx.strokeStyle = "#00FFFF"; ctx.lineWidth = 1.5; ctx.strokeRect(CX, CY, CW, CH);
+
+    // Header
+    ctx.fillStyle = "rgba(0,255,255,0.42)"; ctx.font = "10px monospace"; ctx.textAlign = "center";
+    ctx.fillText("LIFEPOD  ·  BIOSCAN  ·  RESULT", GAME_W / 2, CY + 22);
+
+    // Blurred face placeholder
+    const faceCX = GAME_W / 2, faceCY = CY + 76, faceR = 32;
+    const blurGrad = ctx.createRadialGradient(faceCX, faceCY, 0, faceCX, faceCY, faceR);
+    blurGrad.addColorStop(0, "rgba(180,180,160,0.55)");
+    blurGrad.addColorStop(0.5, "rgba(140,130,110,0.35)");
+    blurGrad.addColorStop(1, "rgba(60,60,50,0.0)");
+    ctx.fillStyle = blurGrad; ctx.beginPath(); ctx.arc(faceCX, faceCY, faceR, 0, Math.PI * 2); ctx.fill();
+    // Motion blur strokes across face
+    ctx.save(); ctx.globalAlpha = 0.18;
+    for (let i = -3; i <= 3; i++) {
+      ctx.fillStyle = "rgba(200,190,170,0.6)";
+      ctx.fillRect(faceCX - faceR, faceCY + i * 6, faceR * 2, 3);
+    }
+    ctx.restore();
+
+    // Survivor label (not the real name)
+    ctx.fillStyle = "rgba(150,220,255,0.75)"; ctx.font = "bold 13px monospace"; ctx.textAlign = "center";
+    ctx.fillText(survivorNum.toUpperCase(), GAME_W / 2, CY + 122);
+
+    if (this.discoveryPhase === "vitals") {
+      // ECG flatline trace — animated waveform line across the panel
+      const traceY = CY + 148;
+      const traceX0 = CX + 28, traceX1 = CX + CW - 28;
+      const traceW = traceX1 - traceX0;
+      // Faint ghost of a former pulse — decaying sine wave fading to flat
+      const decayAge = (2800 - this.discoveryTimer) / 2800; // 0→1 over vitals phase
+      ctx.save();
+      ctx.beginPath(); ctx.moveTo(traceX0, traceY);
+      const steps = 120;
+      for (let s = 0; s <= steps; s++) {
+        const px2 = traceX0 + (s / steps) * traceW;
+        const nx = s / steps; // normalized 0→1
+        // Ghost pulse: a brief QRS spike very early on, decays quickly
+        const ghostEnv = Math.max(0, 1 - decayAge * 4) * Math.max(0, 1 - Math.abs(nx - 0.22) * 12);
+        const ghostAmp = ghostEnv * 22;
+        // Baseline flat: 0 after the ghost fades
+        const flatNoise = (Math.random() - 0.5) * 0.6 * Math.max(0, 1 - decayAge * 5);
+        const py2 = traceY + flatNoise - ghostAmp * Math.sin(nx * Math.PI * 2 * 3) * (nx < 0.3 ? 1 : 0);
+        if (s === 0) ctx.moveTo(px2, py2); else ctx.lineTo(px2, py2);
+      }
+      const traceAlpha = 0.22 + Math.max(0, 1 - decayAge * 3) * 0.28;
+      ctx.strokeStyle = `rgba(255,60,60,${traceAlpha})`; ctx.lineWidth = 1.2; ctx.stroke();
+      ctx.restore();
+
+      // Solid flat line — the flatline itself, pulses red
+      ctx.save();
+      ctx.shadowColor = "#FF0000"; ctx.shadowBlur = 6 + Math.sin(t * 5) * 4;
+      ctx.strokeStyle = `rgba(255,30,30,${0.65 + Math.sin(t * 4) * 0.15})`; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(traceX0, traceY); ctx.lineTo(traceX1, traceY); ctx.stroke();
+      ctx.restore();
+
+      // FLATLINE label
+      ctx.fillStyle = "#FF2222"; ctx.font = "bold 30px monospace";
+      ctx.shadowColor = "#FF0000"; ctx.shadowBlur = 24 + Math.sin(t * 6) * 8;
+      ctx.fillText("FLATLINE", GAME_W / 2, CY + 185);
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = "rgba(255,80,80,0.55)"; ctx.font = "11px monospace";
+      ctx.fillText("VITAL SIGNS: NONE DETECTED", GAME_W / 2, CY + 207);
+      // Cold system log
+      ctx.fillStyle = "rgba(180,180,180,0.5)"; ctx.font = "italic 12px monospace";
+      ctx.fillText("Survivor recovered.", GAME_W / 2, CY + 240);
+
+    } else if (this.discoveryPhase === "farewell") {
+      // Pod window message (written in dark red)
+      ctx.fillStyle = "rgba(255,255,255,0.18)"; ctx.font = "10px monospace";
+      ctx.fillText("LAST RECORDED MESSAGE — POD INTERIOR", GAME_W / 2, CY + 148);
+
+      const msgAlpha = Math.min(1, (farewellTime - this.discoveryTimer) / 700);
+      ctx.fillStyle = `rgba(200,40,40,${msgAlpha * 0.88})`; ctx.font = "italic 21px Georgia, serif";
+      ctx.fillText(this.discoveryFarewellMsg ?? "", GAME_W / 2, CY + 194);
+
+      // Cold log — same phrase, feels like a cruelty
+      const logAlpha = Math.min(1, (farewellTime - this.discoveryTimer) / 1200);
+      ctx.fillStyle = `rgba(160,160,160,${logAlpha * 0.55})`; ctx.font = "italic 11px monospace";
+      ctx.fillText("Survivor recovered.", GAME_W / 2, CY + 240);
+
+      // Noah-specific: comms line shown in farewell panel
+      if (this.discoverySurvivor === "noah") {
+        const noahAlpha = Math.min(1, (farewellTime - this.discoveryTimer) / 400);
+        ctx.fillStyle = `rgba(0,200,255,${noahAlpha * 0.6})`; ctx.font = "italic 12px monospace";
+        ctx.fillText('[COMMS] "Dad? Is that you?"', GAME_W / 2, CY + 264);
+      }
+    }
+  }
+
+  private renderMemoryFlash() {
+    const ctx = this.hudCtx;
+    const t = Date.now() / 1000;
+    const a = this.memoryFlashAlpha ?? 0;
+
+    // Always draw black — acts as the 1s silence cut and the fade envelope
+    ctx.fillStyle = "rgba(0,0,0,1)"; ctx.fillRect(0, 0, GAME_W, GAME_H);
+    if (a <= 0) return;
+
+    ctx.save();
+    ctx.globalAlpha = a;
+
+    if (this.discoverySurvivor === "sara") {
+      this.renderMemorySara(t);
+    } else if (this.discoverySurvivor === "noah") {
+      this.renderMemoryNoah(t, a);
+    } else {
+      this.renderMemoryMia(t);
+    }
+
+    ctx.restore();
+  }
+
+  private renderMemorySara(t: number) {
+    const ctx = this.hudCtx;
+    const cx = GAME_W / 2, cy = GAME_H / 2;
+
+    // Slightly overexposed warm sky — like an old sun-bleached photo
+    const skyGrad = ctx.createLinearGradient(0, 0, 0, GAME_H);
+    skyGrad.addColorStop(0, "rgba(255,248,220,1)");
+    skyGrad.addColorStop(0.45, "rgba(255,220,140,0.95)");
+    skyGrad.addColorStop(1, "rgba(180,130,80,0.8)");
+    ctx.fillStyle = skyGrad; ctx.fillRect(0, 0, GAME_W, GAME_H);
+
+    // Sun bloom — upper right, harsh, bleached
+    const sunG = ctx.createRadialGradient(GAME_W * 0.78, GAME_H * 0.18, 0, GAME_W * 0.78, GAME_H * 0.18, 200);
+    sunG.addColorStop(0, "rgba(255,255,240,0.92)");
+    sunG.addColorStop(0.3, "rgba(255,230,150,0.55)");
+    sunG.addColorStop(1, "rgba(255,200,80,0)");
+    ctx.fillStyle = sunG; ctx.fillRect(0, 0, GAME_W, GAME_H);
+
+    // Sunlight streaks radiating from upper right
+    ctx.save(); ctx.globalAlpha *= 0.22;
+    for (let i = 0; i < 8; i++) {
+      const angle = Math.PI * 0.55 + (i / 8) * (Math.PI * 0.45) + Math.sin(t * 0.3 + i) * 0.02;
+      ctx.strokeStyle = "rgba(255,240,180,0.7)"; ctx.lineWidth = 18 + i * 4;
+      ctx.beginPath(); ctx.moveTo(GAME_W * 0.78, GAME_H * 0.18);
+      ctx.lineTo(GAME_W * 0.78 + Math.cos(angle) * GAME_W, GAME_H * 0.18 + Math.sin(angle) * GAME_H);
+      ctx.stroke();
+    }
+    ctx.restore();
+
+    // Boat hull — dark wood plank silhouette at bottom center
+    const boatCX = cx + 40, boatY = cy + 80;
+    ctx.fillStyle = "rgba(60,35,15,0.72)";
+    ctx.beginPath(); ctx.ellipse(boatCX, boatY, 170, 28, -0.08, 0, Math.PI * 2); ctx.fill();
+
+    // Water glimmer at very bottom
+    const waterGrad = ctx.createLinearGradient(0, GAME_H * 0.72, 0, GAME_H);
+    waterGrad.addColorStop(0, "rgba(100,160,200,0)");
+    waterGrad.addColorStop(1, "rgba(40,100,160,0.55)");
+    ctx.fillStyle = waterGrad; ctx.fillRect(0, GAME_H * 0.72, GAME_W, GAME_H * 0.28);
+
+    // Woman figure — fully blurred silhouette, seated in boat
+    const figX = cx - 30, figY = cy + 12;
+    // Body
+    const figGrad = ctx.createRadialGradient(figX, figY, 0, figX, figY + 20, 55);
+    figGrad.addColorStop(0, "rgba(80,55,35,0.45)");
+    figGrad.addColorStop(1, "rgba(80,55,35,0)");
+    ctx.fillStyle = figGrad; ctx.fillRect(figX - 35, figY - 45, 70, 80);
+    // Heavy motion blur across the face — completely unreadable
+    ctx.save(); ctx.globalAlpha *= 0.38;
+    for (let i = -5; i <= 5; i++) {
+      ctx.fillStyle = "rgba(220,180,140,0.4)";
+      ctx.fillRect(figX - 28, figY - 58 + i * 5, 56, 4);
+    }
+    ctx.restore();
+
+    // Reaching hand — from lower-right corner toward the figure
+    const handFromX = GAME_W * 0.82, handFromY = GAME_H * 0.78;
+    const handToX = figX + 32, handToY = figY + 15;
+    ctx.strokeStyle = "rgba(180,140,100,0.48)"; ctx.lineWidth = 12;
+    ctx.lineCap = "round";
+    ctx.beginPath(); ctx.moveTo(handFromX, handFromY); ctx.lineTo(handToX, handToY); ctx.stroke();
+    // Finger suggestions
+    for (let f = 0; f < 4; f++) {
+      const angle = -0.4 + f * 0.18;
+      ctx.lineWidth = 6;
+      ctx.beginPath();
+      ctx.moveTo(handToX, handToY);
+      ctx.lineTo(handToX + Math.cos(angle) * 22, handToY + Math.sin(angle) * 22);
+      ctx.stroke();
+    }
+
+    // Laughing posture — slight lean + arms-up suggestion (very blurred)
+    ctx.save(); ctx.globalAlpha *= 0.25;
+    ctx.strokeStyle = "rgba(80,55,35,0.5)"; ctx.lineWidth = 8;
+    ctx.beginPath(); ctx.moveTo(figX - 5, figY - 10); ctx.lineTo(figX - 40, figY - 45); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(figX + 5, figY - 10); ctx.lineTo(figX + 35, figY - 50); ctx.stroke();
+    ctx.restore();
+  }
+
+  private renderMemoryNoah(t: number, globalAlpha: number) {
+    const ctx = this.hudCtx;
+    const cx = GAME_W / 2, cy = GAME_H / 2;
+
+    // Paper background — warm off-white, slightly yellowed
+    const paper = ctx.createLinearGradient(0, 0, GAME_W, GAME_H);
+    paper.addColorStop(0, "rgba(255,252,235,1)");
+    paper.addColorStop(1, "rgba(245,238,210,1)");
+    ctx.fillStyle = paper; ctx.fillRect(0, 0, GAME_W, GAME_H);
+
+    // Paper texture — faint ruled lines
+    ctx.strokeStyle = "rgba(180,170,140,0.22)"; ctx.lineWidth = 1;
+    for (let ly = 60; ly < GAME_H; ly += 28) {
+      ctx.beginPath(); ctx.moveTo(0, ly); ctx.lineTo(GAME_W, ly); ctx.stroke();
+    }
+
+    // Submarine body — clumsy crayon rectangle
+    const subX = cx - 180, subY = cy - 55, subW = 360, subH = 80;
+    // Hull outline (crayon-style: multiple strokes slightly offset)
+    for (let s = 0; s < 3; s++) {
+      ctx.strokeStyle = `rgba(20,80,180,${0.55 - s * 0.12})`;
+      ctx.lineWidth = 6 - s;
+      ctx.beginPath(); ctx.roundRect(subX + s, subY + s, subW, subH, 12); ctx.stroke();
+    }
+    // Hull fill
+    ctx.fillStyle = "rgba(60,120,220,0.12)"; ctx.beginPath(); ctx.roundRect(subX, subY, subW, subH, 12); ctx.fill();
+
+    // Conning tower
+    ctx.strokeStyle = "rgba(20,80,180,0.6)"; ctx.lineWidth = 5;
+    ctx.beginPath(); ctx.roundRect(cx - 30, subY - 48, 60, 52, 6); ctx.stroke();
+    ctx.fillStyle = "rgba(60,120,220,0.10)"; ctx.beginPath(); ctx.roundRect(cx - 30, subY - 48, 60, 52, 6); ctx.fill();
+
+    // Periscope
+    ctx.strokeStyle = "rgba(20,80,180,0.55)"; ctx.lineWidth = 4;
+    ctx.beginPath(); ctx.moveTo(cx + 10, subY - 48); ctx.lineTo(cx + 10, subY - 80); ctx.lineTo(cx + 30, subY - 80); ctx.stroke();
+
+    // Propeller
+    ctx.strokeStyle = "rgba(20,80,180,0.50)"; ctx.lineWidth = 3;
+    for (let p = 0; p < 4; p++) {
+      const pAngle = (p / 4) * Math.PI * 2 + t * 2;
+      ctx.beginPath();
+      ctx.moveTo(subX + subW + 2, cy);
+      ctx.lineTo(subX + subW + 2 + Math.cos(pAngle) * 18, cy + Math.sin(pAngle) * 18);
+      ctx.stroke();
+    }
+
+    // Crayon waves below sub
+    ctx.strokeStyle = "rgba(20,100,200,0.35)"; ctx.lineWidth = 3;
+    for (let w = 0; w < 4; w++) {
+      const wY = subY + subH + 18 + w * 14;
+      ctx.beginPath(); ctx.moveTo(subX - 20, wY);
+      for (let wx2 = subX - 20; wx2 <= subX + subW + 20; wx2 += 30) {
+        ctx.lineTo(wx2 + 15, wY - 8); ctx.lineTo(wx2 + 30, wY);
+      }
+      ctx.stroke();
+    }
+
+    // "DAD" in big clumsy crayon letters
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.font = "bold 62px Georgia, serif";
+    ctx.lineWidth = 3;
+    for (let ds = 2; ds >= 0; ds--) {
+      ctx.fillStyle = `rgba(220,40,20,${0.72 - ds * 0.18})`;
+      ctx.fillText("DAD", cx + ds * 1.5, cy + ds * 1.5);
+    }
+    ctx.restore();
+
+    // Glass crack effect — appears during hold phase
+    if (this.memoryFlashPhase === "hold" || this.memoryFlashPhase === "out") {
+      const crackProgress = this.memoryFlashPhase === "out" ? globalAlpha : Math.min(1, (1 - (globalAlpha > 0.95 ? 0 : 0)) * 0.7 + 0.3);
+      const crackAlpha = this.memoryFlashPhase === "hold" ? Math.min(1, (1 - globalAlpha) * 3 + 0.25) : 1 - globalAlpha * 0.8;
+      ctx.strokeStyle = `rgba(80,80,80,${crackAlpha * crackProgress * 0.75})`; ctx.lineWidth = 1.2;
+      const cracks: [number,number,number,number][] = [
+        [cx, cy-80, cx+120, cy+60], [cx, cy-80, cx-100, cy+80],
+        [cx-100, cy+80, cx+120, cy+60], [cx+120, cy+60, cx+180, cy-20],
+        [cx-100, cy+80, cx-160, cy+30], [cx, cy-80, cx+20, cy-160],
+      ];
+      for (const [x1,y1,x2,y2] of cracks) {
+        ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+        // Branch cracks
+        const midX = (x1+x2)/2, midY = (y1+y2)/2;
+        ctx.beginPath(); ctx.moveTo(midX, midY);
+        ctx.lineTo(midX + (y2-y1)*0.3, midY + (x1-x2)*0.3); ctx.stroke();
+      }
+    }
+  }
+
+  private renderMemoryMia(t: number) {
+    const ctx = this.hudCtx;
+    const cx = GAME_W / 2, cy = GAME_H / 2;
+
+    // Clean white paper background
+    ctx.fillStyle = "rgba(255,255,252,1)"; ctx.fillRect(0, 0, GAME_W, GAME_H);
+
+    // Paper edges — slightly dog-eared
+    ctx.fillStyle = "rgba(240,235,220,0.4)";
+    ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(40,0); ctx.lineTo(0,40); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(GAME_W,0); ctx.lineTo(GAME_W-40,0); ctx.lineTo(GAME_W,40); ctx.fill();
+
+    // Sun drawing — bright yellow crayon
+    const sunCX = cx - 60, sunCY = cy - 80, sunR = 52;
+    // Sun glow
+    const sunGlow = ctx.createRadialGradient(sunCX, sunCY, 0, sunCX, sunCY, sunR * 2.2);
+    sunGlow.addColorStop(0, "rgba(255,240,50,0.45)");
+    sunGlow.addColorStop(1, "rgba(255,240,50,0)");
+    ctx.fillStyle = sunGlow; ctx.fillRect(sunCX - sunR * 2.5, sunCY - sunR * 2.5, sunR * 5, sunR * 5);
+
+    // Sun circle (thick crayon strokes — imperfect circle)
+    for (let s = 0; s < 4; s++) {
+      ctx.strokeStyle = `rgba(255,200,20,${0.75 - s * 0.15})`;
+      ctx.lineWidth = 8 - s * 1.5;
+      ctx.beginPath();
+      ctx.arc(sunCX + s * 0.5, sunCY + s * 0.5, sunR - s, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+    ctx.fillStyle = "rgba(255,230,30,0.4)"; ctx.beginPath(); ctx.arc(sunCX, sunCY, sunR, 0, Math.PI * 2); ctx.fill();
+
+    // Sun rays — uneven, child-drawn
+    const rayLengths = [38, 28, 42, 26, 40, 32, 36, 30, 44, 27, 35, 31];
+    for (let r = 0; r < 12; r++) {
+      const angle = (r / 12) * Math.PI * 2 + 0.1 * Math.sin(r * 2.3);
+      const rayLen = rayLengths[r] ?? 34;
+      const jitter = Math.sin(r * 3.7 + 1.2) * 5; // wobbly rays
+      ctx.strokeStyle = `rgba(255,190,10,0.70)`; ctx.lineWidth = 5;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(sunCX + Math.cos(angle) * (sunR + 8), sunCY + Math.sin(angle) * (sunR + 8));
+      ctx.lineTo(sunCX + Math.cos(angle) * (sunR + rayLen + jitter), sunCY + Math.sin(angle) * (sunR + rayLen + jitter));
+      ctx.stroke();
+    }
+
+    // Tiny child's hand — lower right, holding yellow crayon
+    // Hand silhouette — very small, delicate
+    const handCX = cx + 95, handCY = cy + 55;
+    const handGrad = ctx.createRadialGradient(handCX, handCY - 10, 0, handCX, handCY, 55);
+    handGrad.addColorStop(0, "rgba(230,190,155,0.82)");
+    handGrad.addColorStop(0.6, "rgba(215,170,130,0.5)");
+    handGrad.addColorStop(1, "rgba(200,160,120,0)");
+    ctx.fillStyle = handGrad; ctx.beginPath(); ctx.ellipse(handCX, handCY, 35, 28, 0.3, 0, Math.PI * 2); ctx.fill();
+
+    // Tiny fingers
+    ctx.strokeStyle = "rgba(215,165,125,0.65)"; ctx.lineWidth = 5; ctx.lineCap = "round";
+    for (let f = 0; f < 4; f++) {
+      const fingerAngle = -0.7 + f * 0.38;
+      const fLen = 20 + f * 2;
+      ctx.beginPath();
+      ctx.moveTo(handCX - 12 + f * 8, handCY - 14);
+      ctx.lineTo(handCX - 12 + f * 8 + Math.cos(fingerAngle) * fLen, handCY - 14 + Math.sin(fingerAngle) * fLen);
+      ctx.stroke();
+    }
+    // Thumb
+    ctx.beginPath();
+    ctx.moveTo(handCX - 26, handCY - 4);
+    ctx.lineTo(handCX - 42, handCY - 22);
+    ctx.stroke();
+
+    // Yellow crayon held in hand
+    ctx.save();
+    ctx.translate(handCX + 8, handCY - 28); ctx.rotate(-0.85);
+    ctx.fillStyle = "rgba(255,210,20,0.88)"; ctx.fillRect(-3, -28, 7, 30);
+    ctx.fillStyle = "rgba(200,160,10,0.7)"; ctx.fillRect(-3, -28, 7, 5);
+    // Crayon tip
+    ctx.fillStyle = "rgba(255,220,50,0.92)";
+    ctx.beginPath(); ctx.moveTo(-3, 2); ctx.lineTo(4, 2); ctx.lineTo(0.5, 12); ctx.fill();
+    ctx.restore();
+
+    // Faint crayon marks — partially drawn lines the child already made
+    ctx.save(); ctx.globalAlpha *= 0.35;
+    ctx.strokeStyle = "rgba(255,200,20,0.6)"; ctx.lineWidth = 4; ctx.lineCap = "round";
+    ctx.beginPath(); ctx.moveTo(sunCX + sunR + 10, sunCY - 20);
+    ctx.lineTo(sunCX + sunR + 42, sunCY - 30); ctx.stroke(); // partial ray being drawn
+    ctx.restore();
+
+    // Little caption — bottom, faint
+    ctx.fillStyle = "rgba(180,160,120,0.32)"; ctx.font = "italic 11px monospace"; ctx.textAlign = "center";
+    ctx.fillText("— age 5 —", cx, GAME_H - 30);
+
+    // Gentle ambient pulse — warm vignette breathing
+    const vignette = ctx.createRadialGradient(cx, cy, GAME_H * 0.25, cx, cy, GAME_H * 0.75);
+    const v = 0.08 + Math.sin(t * 0.8) * 0.04;
+    vignette.addColorStop(0, "rgba(255,240,200,0)");
+    vignette.addColorStop(1, `rgba(200,160,90,${v})`);
+    ctx.fillStyle = vignette; ctx.fillRect(0, 0, GAME_W, GAME_H);
+  }
+
+  // ============================================================
+  // COLLAPSE SCREEN (The End)
+  // ============================================================
+  private renderCollapse() {
+    const ctx = this.hudCtx;
+    const t = this.collapseTimer / 1000;
+    const pct = Math.min(1, this.collapseTimer / 8000);
+
+    // ── Phase 0–40%: Camera shake builds as geometry tears apart ──
+    if (pct < 0.4) {
+      const shakeStr = Math.sin(pct * Math.PI / 0.4) * 0.015;
+      this.camera.position.x += (Math.random() - 0.5) * shakeStr;
+      this.camera.position.y = 1.65 + (Math.random() - 0.5) * shakeStr * 0.6;
+    }
+
+    // Dark base — deepens as scene dissolves
+    ctx.fillStyle = `rgba(0,0,0,${0.87 + pct * 0.12})`; ctx.fillRect(0, 0, GAME_W, GAME_H);
+
+    // ── Phase 10–60%: Horizontal line-segment dropout (geometry teardown) ──
+    if (pct > 0.1 && pct < 0.62) {
+      const intensity = (pct - 0.1) / 0.52;
+      const tearCount = Math.floor(intensity * 24);
+      ctx.save(); ctx.globalCompositeOperation = "destination-out";
+      for (let i = 0; i < tearCount; i++) {
+        const yPos = Math.random() * GAME_H;
+        ctx.fillStyle = `rgba(0,0,0,${0.45 + Math.random() * 0.4})`;
+        ctx.fillRect(Math.random() * GAME_W * 0.4, yPos, (0.35 + Math.random() * 0.65) * GAME_W, 1 + Math.random() * 2.5);
+      }
+      ctx.restore();
+    }
+
+    // ── Phase 0–20%: One brief critical status line, then gone ──
+    if (pct < 0.2) {
+      const a = 1 - pct / 0.2;
+      ctx.fillStyle = `rgba(0,220,255,${a * 0.55})`; ctx.font = "bold 18px monospace"; ctx.textAlign = "center";
+      ctx.fillText("SYSTEM STATUS: CRITICAL", GAME_W / 2, GAME_H / 2);
+    }
+
+    // ── Phase 55–100%: Pure white-out ──
+    if (pct > 0.55) {
+      const white = Math.min(1, (pct - 0.55) / 0.45);
+      ctx.fillStyle = `rgba(255,255,255,${white})`; ctx.fillRect(0, 0, GAME_W, GAME_H);
+    }
+
+    // ── Final card: white on white — text is barely visible against the white field ──
+    if (this.collapseWhite > 0.92) {
+      const cardA = Math.min(1, (this.collapseWhite - 0.92) / 0.08);
+      ctx.textAlign = "center";
+      // Slightly warm-gray text on white — understated, not branded
+      ctx.fillStyle = `rgba(170,165,160,${cardA * 0.48})`; ctx.font = "11px monospace";
+      ctx.fillText("ECHOES  OF  THE  DEEP", GAME_W / 2, GAME_H / 2 - 5);
+      ctx.fillStyle = `rgba(155,150,145,${cardA * 0.36})`; ctx.font = "10px monospace";
+      ctx.fillText("2024", GAME_W / 2, GAME_H / 2 + 16);
+    }
   }
 
   // ============================================================
@@ -4721,7 +5617,7 @@ class EchoesGame {
 
     // Level indicator at bottom of card
     ctx.fillStyle = 'rgba(120,108,72,0.38)'; ctx.font = '9px monospace';
-    ctx.fillText(`SECTOR ${['ALPHA','BETA','GAMMA'][this.lvlIdx] ?? 'UNKNOWN'}  ·  DEPTH ${[20,55,82][this.lvlIdx] ?? 0}m`, GAME_W/2, CY + CH - 10);
+    ctx.fillText(`SECTOR ${['ALPHA','BETA','GAMMA'][this.lvlIdx] ?? 'UNKNOWN'}  ·  DEPTH ${[35,65,95][this.lvlIdx] ?? 0}m`, GAME_W/2, CY + CH - 10);
   }
 
   // ============================================================
@@ -4814,8 +5710,8 @@ class EchoesGame {
     ctx.beginPath(); ctx.moveTo(CX + 20, CY + 29); ctx.lineTo(CX + CW - 20, CY + 29); ctx.stroke();
 
     // "DEPTH INCREASING" alert
-    const lvlNames = ['LEVEL I — THE DESCENT', 'LEVEL II — THE PRESSURE ZONE', 'LEVEL III — THE ABYSS'];
-    const depthVals = [20, 55, 82];
+    const lvlNames = ['LEVEL II — THE WIFE', 'LEVEL III — FIRST SON', 'LEVEL IV — SECOND CHILD'];
+    const depthVals = [35, 65, 95];
     const lvlLabel = lvlNames[this.transitionTargetLvl] ?? `LEVEL ${this.transitionTargetLvl + 1}`;
     const targetDepth = depthVals[this.transitionTargetLvl] ?? 0;
 
@@ -4906,13 +5802,14 @@ class EchoesGame {
   // ============================================================
   private renderGlitch() {
     const ctx = this.hudCtx;
+    // Base chromatic aberration
     ctx.globalCompositeOperation = "screen";
     ctx.fillStyle = `rgba(255,0,0,${0.03 + Math.random()*0.04})`;
     ctx.fillRect(3, 0, GAME_W, GAME_H);
     ctx.fillStyle = `rgba(0,255,255,${0.02 + Math.random()*0.03})`;
     ctx.fillRect(-3, 0, GAME_W, GAME_H);
     ctx.globalCompositeOperation = "source-over";
-    // Random horizontal slice offsets
+    // Standard horizontal slice offsets
     for (let i = 0; i < 3; i++) {
       const gy = Math.random() * GAME_H;
       const gh = Math.random() * 18 + 4;
@@ -4922,6 +5819,32 @@ class EchoesGame {
         ctx.clearRect(0, gy, GAME_W, gh);
         ctx.putImageData(d, gx, gy);
       } catch (_) { /* cross-origin guard */ }
+    }
+    if (this.lvlIdx === 2 && this.miaProximity > 0) { // Level 4 proximity wireframe post-FX
+      const p = this.miaProximity;
+      // Scanline tears: horizontal bands of darkness/static that deepen with proximity
+      const tearCount = 2 + Math.floor(p * 8);
+      for (let i = 0; i < tearCount; i++) {
+        const ty = Math.random() * GAME_H;
+        const th = 1 + Math.random() * (2 + p * 5);
+        ctx.fillStyle = `rgba(0,0,0,${0.35 + Math.random() * p * 0.5})`;
+        ctx.fillRect(0, ty, GAME_W, th);
+      }
+      // Wireframe edge breakup: thin cyan/white horizontal streaks (simulate geometry edge artifacts)
+      const edgeCount = Math.floor(p * 6);
+      for (let i = 0; i < edgeCount; i++) {
+        const ey = Math.random() * GAME_H;
+        const ew = (0.1 + Math.random() * 0.4) * GAME_W;
+        const ex = Math.random() * (GAME_W - ew);
+        ctx.fillStyle = `rgba(0,255,200,${0.04 + Math.random() * p * 0.10})`;
+        ctx.fillRect(ex, ey, ew, 0.5 + Math.random());
+      }
+      // Full-screen geometry dissolve veil — increases with proximity
+      if (p > 0.4) {
+        const veil = (p - 0.4) / 0.6;
+        ctx.fillStyle = `rgba(0,20,15,${veil * 0.18})`;
+        ctx.fillRect(0, 0, GAME_W, GAME_H);
+      }
     }
   }
 
