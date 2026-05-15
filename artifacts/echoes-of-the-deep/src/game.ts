@@ -60,6 +60,7 @@ interface Enemy {
   waypoints: Vec2[]; wpIdx: number; speed: number;
   state: "patrol" | "alert" | "hunt";
   visTimer: number; hitR: number; listenTimer: number; damagedAt: number;
+  roarTimer?: number;
 }
 interface Lifepod { x: number; y: number; id: string; rescued: boolean; revealTimer: number; character: string; commsLine: string }
 interface NoiseObj { x: number; y: number; id: string; silenced: boolean; noiseRate: number; revealTimer: number }
@@ -174,6 +175,83 @@ class AudioSys {
     g.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + 0.35);
     osc.connect(g); g.connect(this.master); osc.start(); osc.stop(this.ctx.currentTime + 0.35);
   }
+  // ----- LEVIATHAN ROAR — deep guttural growl with FM modulation, sub-bass & noise -----
+  leviathanRoar(intensity: 1 | 2 = 1) {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx;
+    const t0 = ctx.currentTime;
+    const dur = intensity === 2 ? 2.6 : 1.8;
+    const peak = intensity === 2 ? 0.55 : 0.42;
+
+    // Envelope (slow attack, long body, slow tail)
+    const out = ctx.createGain();
+    out.gain.setValueAtTime(0, t0);
+    out.gain.linearRampToValueAtTime(peak, t0 + 0.25);
+    out.gain.linearRampToValueAtTime(peak * 0.85, t0 + dur * 0.55);
+    out.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+    // Lowpass to keep it muffled & underwater
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.value = 420;
+    lp.Q.value = 1.2;
+    out.connect(lp); lp.connect(this.master);
+
+    // 1) Sub-bass fundamental — slow downward sweep (the "growl")
+    const sub = ctx.createOscillator();
+    sub.type = "sine";
+    sub.frequency.setValueAtTime(70, t0);
+    sub.frequency.exponentialRampToValueAtTime(38, t0 + dur);
+    const subG = ctx.createGain(); subG.gain.value = 0.55;
+    sub.connect(subG); subG.connect(out);
+    sub.start(t0); sub.stop(t0 + dur);
+
+    // 2) Sawtooth growl — adds harmonic grit; FM-modulated for snarl
+    const saw = ctx.createOscillator();
+    saw.type = "sawtooth";
+    saw.frequency.setValueAtTime(90, t0);
+    saw.frequency.exponentialRampToValueAtTime(48, t0 + dur);
+    const lfo = ctx.createOscillator();
+    lfo.type = "sine"; lfo.frequency.value = 7.5;
+    const lfoG = ctx.createGain(); lfoG.gain.value = 18;
+    lfo.connect(lfoG); lfoG.connect(saw.frequency);
+    const sawG = ctx.createGain(); sawG.gain.value = 0.32;
+    saw.connect(sawG); sawG.connect(out);
+    saw.start(t0); saw.stop(t0 + dur);
+    lfo.start(t0); lfo.stop(t0 + dur);
+
+    // 3) Mid-range harmonic — gives it a "voice"
+    const mid = ctx.createOscillator();
+    mid.type = "triangle";
+    mid.frequency.setValueAtTime(180, t0);
+    mid.frequency.exponentialRampToValueAtTime(95, t0 + dur);
+    const midG = ctx.createGain(); midG.gain.value = 0.18;
+    mid.connect(midG); midG.connect(out);
+    mid.start(t0); mid.stop(t0 + dur);
+
+    // 4) Filtered noise — breath & gravel
+    const noiseBuf = ctx.createBuffer(1, ctx.sampleRate * dur, ctx.sampleRate);
+    const nd = noiseBuf.getChannelData(0);
+    for (let i = 0; i < nd.length; i++) nd[i] = (Math.random() * 2 - 1) * 0.6;
+    const noise = ctx.createBufferSource(); noise.buffer = noiseBuf;
+    const nFilt = ctx.createBiquadFilter();
+    nFilt.type = "bandpass"; nFilt.frequency.value = 220; nFilt.Q.value = 0.8;
+    const nG = ctx.createGain(); nG.gain.value = 0.28;
+    noise.connect(nFilt); nFilt.connect(nG); nG.connect(out);
+    noise.start(t0); noise.stop(t0 + dur);
+
+    // Clean up the entire node graph once the longest source ends — prevents accumulation over long play sessions
+    noise.onended = () => {
+      try {
+        sub.disconnect(); subG.disconnect();
+        saw.disconnect(); sawG.disconnect();
+        lfo.disconnect(); lfoG.disconnect();
+        mid.disconnect(); midG.disconnect();
+        noise.disconnect(); nFilt.disconnect(); nG.disconnect();
+        out.disconnect(); lp.disconnect();
+      } catch { /* nodes already disconnected */ }
+    };
+  }
+
   flatline() {
     if (!this.ctx || !this.master) return;
     const osc = this.ctx.createOscillator(), g = this.ctx.createGain();
@@ -600,16 +678,17 @@ function buildLeviathanGroup(): { group: THREE.Group; mats: THREE.LineBasicMater
     blending: THREE.AdditiveBlending, depthWrite: false,
   });
 
-  // ----- BODY: long ribbon of tapering segments along -Z -----
-  const segCount = 22;
-  const segSpacing = 1.9;
+  // ----- BODY: long EEL-LIKE ribbon, slim & monotonically tapering head-to-tail -----
+  // No middle bulge (would read as jellyfish). Smooth taper from r=2.0 at head end to r=0.35 at tail.
+  const segCount = 26;
+  const segSpacing = 1.7;
   // Slight S-curve for the "charging" silhouette
-  const curve = (t: number) => Math.sin(t * Math.PI * 1.4) * 1.2;
+  const curve = (t: number) => Math.sin(t * Math.PI * 1.4) * 1.4;
   for (let i = 0; i < segCount; i++) {
     const t = i / (segCount - 1);
-    // Bulges in middle (anglerfish-bulb body), tapers to thin tail
-    const bulge = Math.sin((1 - t) * Math.PI * 0.85);
-    const r = 0.7 + 2.0 * bulge;
+    // Eel-like profile: thicker near head, narrows smoothly to tail (cubic ease-out)
+    const taper = 1 - t;
+    const r = 0.35 + 1.65 * (taper * taper);
     const segGeo = new THREE.SphereGeometry(r, 12, 9);
     const z = -i * segSpacing;
     const yOffset = curve(t);
@@ -1661,6 +1740,17 @@ class EchoesGame {
         this.o2 = Math.max(0, this.o2 - O2_LOSS_HIT); this.invTimer = 2200;
         this.glitchTimer = 700; this.noise = Math.min(100, this.noise + 20);
         this.audio.damage(); this.showSub("[ HULL BREACH — OXYGEN DEPLETED ]");
+        if (e.type === "leviathan") this.audio.leviathanRoar(2);
+      }
+      // Periodic leviathan roar when hunting (scary stalking growl)
+      if (e.type === "leviathan") {
+        e.roarTimer = (e.roarTimer ?? 0) - dt;
+        if (e.roarTimer <= 0) {
+          // Roar more often when hunting, occasionally when alert, rarely when patrolling
+          const interval = e.state === "hunt" ? 3500 : e.state === "alert" ? 7000 : 14000;
+          e.roarTimer = interval + Math.random() * 1500;
+          this.audio.leviathanRoar(e.state === "hunt" ? 2 : 1);
+        }
       }
       if (this.invTimer > 0) this.invTimer -= dt;
 
