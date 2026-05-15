@@ -7,6 +7,129 @@ import * as THREE from "three";
 import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
+import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
+
+// ============================================================
+// POST-PROCESSING SHADER DEFINITIONS
+// ============================================================
+
+const VignetteShader = {
+  uniforms: {
+    tDiffuse: { value: null as THREE.Texture | null },
+    offset:   { value: 0.35 },
+    darkness: { value: 0.9 },
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }
+  `,
+  fragmentShader: `
+    uniform sampler2D tDiffuse;
+    uniform float offset;
+    uniform float darkness;
+    varying vec2 vUv;
+    void main() {
+      vec4 color = texture2D(tDiffuse, vUv);
+      vec2 uv = vUv - vec2(0.5);
+      float dist = length(uv);
+      float v = 1.0 - smoothstep(offset, offset + 0.42, dist);
+      color.rgb *= mix(1.0 - darkness, 1.0, v);
+      gl_FragColor = color;
+    }
+  `,
+};
+
+const FilmGrainShader = {
+  uniforms: {
+    tDiffuse:  { value: null as THREE.Texture | null },
+    time:      { value: 0.0 },
+    intensity: { value: 0.45 },
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }
+  `,
+  fragmentShader: `
+    uniform sampler2D tDiffuse;
+    uniform float time;
+    uniform float intensity;
+    varying vec2 vUv;
+    float rand(vec2 co) {
+      return fract(sin(dot(co, vec2(12.9898, 78.233))) * 43758.5453);
+    }
+    void main() {
+      vec4 color = texture2D(tDiffuse, vUv);
+      float t = fract(time * 0.37);
+      float gr = rand(vUv + t) * 2.0 - 1.0;
+      float gg = rand(vUv + t + 0.13) * 2.0 - 1.0;
+      float gb = rand(vUv + t + 0.27) * 2.0 - 1.0;
+      color.r = clamp(color.r + gr * intensity, 0.0, 1.0);
+      color.g = clamp(color.g + gg * intensity * 0.75, 0.0, 1.0);
+      color.b = clamp(color.b + gb * intensity * 0.85, 0.0, 1.0);
+      gl_FragColor = color;
+    }
+  `,
+};
+
+const ChromaticAberrationShader = {
+  uniforms: {
+    tDiffuse: { value: null as THREE.Texture | null },
+    strength: { value: 0.004 },
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }
+  `,
+  fragmentShader: `
+    uniform sampler2D tDiffuse;
+    uniform float strength;
+    varying vec2 vUv;
+    void main() {
+      vec2 center = vec2(0.5);
+      vec2 delta = vUv - center;
+      float dist = length(delta);
+      float fade = smoothstep(0.35, 0.62, dist);
+      vec2 dir = normalize(delta) * strength * fade;
+      float r = texture2D(tDiffuse, vUv + dir * 2.0).r;
+      float g = texture2D(tDiffuse, vUv).g;
+      float b = texture2D(tDiffuse, vUv - dir * 2.0).b;
+      float a = texture2D(tDiffuse, vUv).a;
+      gl_FragColor = vec4(r, g, b, a);
+    }
+  `,
+};
+
+const ColorGradeShader = {
+  uniforms: {
+    tDiffuse: { value: null as THREE.Texture | null },
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }
+  `,
+  fragmentShader: `
+    uniform sampler2D tDiffuse;
+    varying vec2 vUv;
+    vec3 sCurve(vec3 c) {
+      c = clamp(c, 0.0, 1.0);
+      c = pow(c, vec3(1.18));
+      c = c * 0.94 + 0.012;
+      return c;
+    }
+    void main() {
+      vec4 texel = texture2D(tDiffuse, vUv);
+      vec3 color = texel.rgb;
+      color = sCurve(color);
+      float lum = dot(color, vec3(0.2126, 0.7152, 0.0722));
+      color = mix(vec3(lum), color, 0.80);
+      float shadow   = 1.0 - smoothstep(0.0, 0.22, lum);
+      float midtone  = smoothstep(0.0, 0.55, lum) * (1.0 - smoothstep(0.45, 1.0, lum));
+      color += shadow  * vec3(-0.025, -0.012, 0.055);
+      color += midtone * vec3(-0.018,  0.038, 0.028);
+      gl_FragColor = vec4(clamp(color, 0.0, 1.0), texel.a);
+    }
+  `,
+};
 
 // ============================================================
 // CONSTANTS
@@ -1082,6 +1205,44 @@ function buildCockpit(camera: THREE.PerspectiveCamera): { sweep: THREE.Object3D 
   return { sweep: sonarRing };
 }
 
+function makeHeadlightCookie(): THREE.CanvasTexture {
+  const size = 256;
+  const canvas = document.createElement("canvas");
+  canvas.width = size; canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, size, size);
+  const grad = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  grad.addColorStop(0, "rgba(255,255,255,1)");
+  grad.addColorStop(0.45, "rgba(255,255,255,0.85)");
+  grad.addColorStop(0.72, "rgba(255,255,255,0.3)");
+  grad.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, size, size);
+  const imageData = ctx.getImageData(0, 0, size, size);
+  const data = imageData.data;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const idx = (y * size + x) * 4;
+      const dx = (x - size / 2) / (size / 2);
+      const dy = (y - size / 2) / (size / 2);
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      if (dist < 1.0) {
+        const ripple = Math.sin(dist * 20) * 0.12 + Math.sin(dx * 15 + dy * 11) * 0.09 + Math.sin(dx * 8 - dy * 13) * 0.07;
+        const noise = (Math.random() - 0.5) * 0.06;
+        const base = data[idx] / 255;
+        const factor = Math.max(0, Math.min(1, base + ripple + noise));
+        const v = Math.floor(factor * 255);
+        data[idx] = v; data[idx + 1] = v; data[idx + 2] = v;
+      }
+    }
+  }
+  ctx.putImageData(imageData, 0, 0);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.needsUpdate = true;
+  return tex;
+}
+
 function buildParticles(worldW: number, worldH: number): THREE.Points {
   const count = 300;
   const pos = new Float32Array(count * 3);
@@ -1196,6 +1357,9 @@ class EchoesGame {
   private nearPod: Lifepod | null = null;
   private nearNoise: NoiseObj | null = null;
 
+  // Post-processing uniforms that need per-frame updates
+  private grainUniforms: { tDiffuse: { value: THREE.Texture | null }; time: { value: number }; intensity: { value: number } } | null = null;
+
   // RAF
   private rafId = 0; private lastT = 0;
 
@@ -1254,8 +1418,8 @@ class EchoesGame {
 
     // Scene
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x04101a);
-    this.scene.fog = new THREE.FogExp2(0x04101a, 0.055);
+    this.scene.background = new THREE.Color(0x020a0e);
+    this.scene.fog = new THREE.FogExp2(0x020a0e, 0.10);
 
     // Camera
     this.camera = new THREE.PerspectiveCamera(75, GAME_W / GAME_H, 0.05, 500);
@@ -1271,21 +1435,44 @@ class EchoesGame {
     this.scene.add(new THREE.HemisphereLight(0x355577, 0x06101a, 0.55));
 
     // Sub headlight — forward-facing spotlight parented to the camera (porthole view)
-    const headlight = new THREE.SpotLight(0xCCE6FF, 6.0, 30, Math.PI / 4.5, 0.55, 1.4);
+    // Cookie texture gives uneven, water-distorted beam; sharp quadratic falloff
+    const headlight = new THREE.SpotLight(0xCCE6FF, 6.0, 18, Math.PI / 4.5, 0.4, 2);
     headlight.position.set(0, 0, 0);
     headlight.target.position.set(0, 0, -1);
+    headlight.map = makeHeadlightCookie();
     this.camera.add(headlight);
     this.camera.add(headlight.target);
     // Soft close-range fill so nearby walls aren't pitch black at the edges of the cone
-    const fill = new THREE.PointLight(0x6688AA, 0.7, 8);
+    const fill = new THREE.PointLight(0x4466AA, 0.45, 6);
     fill.position.set(0, 0, 0);
     this.camera.add(fill);
 
-    // Effect composer with subtle bloom (just for highlights — flares, HUD glow, eyes)
+    // Effect composer: bloom → vignette → film grain → chromatic aberration → color grade
     this.composer = new EffectComposer(this.renderer);
     this.composer.addPass(new RenderPass(this.scene, this.camera));
     const bloom = new UnrealBloomPass(new THREE.Vector2(GAME_W, GAME_H), 0.45, 0.4, 0.75);
     this.composer.addPass(bloom);
+
+    // Vignette — strong corner darkening for tunnel vision
+    const vignettePass = new ShaderPass(VignetteShader);
+    vignettePass.uniforms.offset.value = 0.35;
+    vignettePass.uniforms.darkness.value = 0.9;
+    this.composer.addPass(vignettePass);
+
+    // Film grain — live static noise each frame
+    const grainPass = new ShaderPass(FilmGrainShader);
+    grainPass.uniforms.intensity.value = 0.045;
+    this.grainUniforms = grainPass.uniforms as typeof this.grainUniforms;
+    this.composer.addPass(grainPass);
+
+    // Chromatic aberration — R/B fringing at screen edges
+    const caPass = new ShaderPass(ChromaticAberrationShader);
+    caPass.uniforms.strength.value = 0.004;
+    this.composer.addPass(caPass);
+
+    // Color grading — S-curve, desaturate, cyan-green mid-tone, cool shadows
+    const colorGradePass = new ShaderPass(ColorGradeShader);
+    this.composer.addPass(colorGradePass);
 
     // Build cockpit (attached to camera)
     const { sweep } = buildCockpit(this.camera);
@@ -2484,7 +2671,10 @@ class EchoesGame {
       this.particleSystem.geometry.attributes.position.needsUpdate = true;
     }
 
-    // Render 3D scene with bloom
+    // Update film grain time uniform for live static noise
+    if (this.grainUniforms) this.grainUniforms.time.value = performance.now() / 1000;
+
+    // Render 3D scene with post-processing stack
     this.composer.render();
 
     // HUD overlay
