@@ -308,8 +308,17 @@ interface LevelData {
   enemyDefs: Array<Omit<Enemy, "state" | "visTimer" | "listenTimer" | "damagedAt">>;
   pods: Lifepod[]; noiseObjs?: NoiseObj[]; o2Start: number; dialogue: DialogueCue[];
   flares?: number;
+  /** Gold letter collectibles spelling a family member's name (Levels I, III, IV only) */
+  letters?: string[];
 }
 interface CutscenePanel { text: string; speaker: string; art: string; badge?: string }
+
+interface LetterEntity {
+  char: string;
+  x: number; y: number;       // 2D world-space position
+  collected: boolean;
+  flashTimer: number;          // ms remaining for collection flash (0 = gone)
+}
 
 type GameState = "MENU" | "PLAYING" | "CUTSCENE" | "DISCOVERY" | "COLLAPSE" | "GAME_OVER" | "LEVEL_TRANSITION";
 
@@ -1229,6 +1238,37 @@ class AudioSys {
     const rG = ctx.createGain(); rG.gain.setValueAtTime(0.04, now); rG.gain.linearRampToValueAtTime(0, now + 1.5);
     rSrc.connect(rFlt); rFlt.connect(rG); rG.connect(this.master); rSrc.start(now);
   }
+
+  // Letter collection echo — soft underwater sine burst with delay tail
+  playLetterEcho() {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx; const now = ctx.currentTime;
+    // Primary tone: ~200 Hz sine, short attack, fast decay
+    const osc = ctx.createOscillator(); osc.type = "sine"; osc.frequency.value = 200 + Math.random() * 30;
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(0, now);
+    env.gain.linearRampToValueAtTime(0.22, now + 0.04);
+    env.gain.exponentialRampToValueAtTime(0.001, now + 0.55);
+    // Lowpass to keep it muffled / underwater
+    const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 620;
+    osc.connect(lp); lp.connect(env); env.connect(this.master);
+    osc.start(now); osc.stop(now + 0.6);
+    osc.onended = () => { try { osc.disconnect(); lp.disconnect(); env.disconnect(); } catch { /* gone */ } };
+    // Echo tail: two delayed copies at lower volume
+    for (let i = 1; i <= 2; i++) {
+      const delay = i * 0.18 + Math.random() * 0.04;
+      const echoOsc = ctx.createOscillator(); echoOsc.type = "sine";
+      echoOsc.frequency.value = 200 + Math.random() * 25;
+      const echoEnv = ctx.createGain();
+      echoEnv.gain.setValueAtTime(0, now + delay);
+      echoEnv.gain.linearRampToValueAtTime(0.07 / i, now + delay + 0.03);
+      echoEnv.gain.exponentialRampToValueAtTime(0.001, now + delay + 0.45);
+      const echoLp = ctx.createBiquadFilter(); echoLp.type = "lowpass"; echoLp.frequency.value = 480;
+      echoOsc.connect(echoLp); echoLp.connect(echoEnv); echoEnv.connect(this.master);
+      echoOsc.start(now + delay); echoOsc.stop(now + delay + 0.5);
+      echoOsc.onended = () => { try { echoOsc.disconnect(); echoLp.disconnect(); echoEnv.disconnect(); } catch { /* gone */ } };
+    }
+  }
 }
 
 // ============================================================
@@ -1300,6 +1340,7 @@ function level1(): LevelData {
       hearingDist: 680, alertDist: 500,
     }],
     pods: [{ x: 2870, y: 950, id: "sara", rescued: false, revealTimer: 0, character: "SARA", commsLine: '"...Come home, Eli."' }],
+    letters: ["S","A","R","A"],
     o2Start: 100,
     dialogue: [
       { time: 1.5,  text: "WASD to navigate. Click to ping sonar. Hold 1 second for LARGE PING — reveals the whole cave." },
@@ -1339,6 +1380,7 @@ function level2(): LevelData {
       { x: 1300, y: 900, type: "stalker", waypoints: [{ x: 1100, y: 700 }, { x: 1550, y: 700 }, { x: 1550, y: 1100 }, { x: 1100, y: 1100 }], wpIdx: 0, speed: 64, hitR: 26, hearingDist: 680, alertDist: 480 },
     ],
     pods: [{ x: 1650, y: 1180, id: "noah", rescued: false, revealTimer: 0, character: "NOAH", commsLine: '"Dad? Is that you?"' }],
+    letters: ["N","O","A","H"],
     noiseObjs: [
       { x: 1120, y: 720, id: "n1", silenced: false, noiseRate: 8, revealTimer: 0 },
       { x: 1200, y: 820, id: "n2", silenced: false, noiseRate: 7, revealTimer: 0 },
@@ -1388,6 +1430,7 @@ function level3(): LevelData {
         wpIdx: 0, speed: 56, hitR: 26, hearingDist: 860, alertDist: 660 },
     ],
     pods: [{ x: 1250, y: 1700, id: "mia", rescued: false, revealTimer: 0, character: "MIA", commsLine: '"I Will Miss You Dad."' }],
+    letters: ["M","I","A"],
     o2Start: 60, flares: 2,
     dialogue: [
       { time: 2, text: 'Elias: "Deepest sector. Oxygen at sixty percent. She\'s here somewhere."' },
@@ -2601,6 +2644,15 @@ class EchoesGame {
   private shakeDuration = 160;      // ms — total duration of current shake event (for decay calc)
   private gameOverReason: "oxygen" | "hull" = "oxygen";
 
+  // Letter collectibles (Levels 1–3 = task Levels 2–4)
+  private letterEntities: LetterEntity[] = [];
+  private nameStripAlpha = 0;      // 0 = hidden, 1 = full opacity
+  private nameStripTimer = 0;      // ms: >0 = hold, then fade out
+  private readonly NAME_STRIP_HOLD = 3000;   // ms full-name holds
+  private readonly NAME_STRIP_FADE = 1000;   // ms fade-out duration
+  private readonly LETTER_COLLECT_R = 70;    // px world units
+  private readonly LETTER_FLASH_DUR = 1000;  // ms
+
   // Level transition
   private transitionTargetLvl = 0;
   private transitionStartMs = 0;
@@ -2831,6 +2883,11 @@ class EchoesGame {
     this.noiseObjs = (def.noiseObjs || []).map(o => ({ ...o }));
     this.dlgQueue = [...def.dialogue];
 
+    // Spawn gold letter collectibles for this level
+    this.spawnLetters(def);
+    this.nameStripAlpha = 0;
+    this.nameStripTimer = 0;
+
     this.camX = def.playerStart.x; this.camY = def.playerStart.y;
     this.yaw = AUTO_FORWARD_YAW;
     this.pitch = 0;
@@ -2859,6 +2916,28 @@ class EchoesGame {
 
     // Build 3D scene async — sets state to PLAYING on completion.
     void this.build3DScene(def);
+  }
+
+  private spawnLetters(def: LevelData) {
+    // Letter sequence comes from the level definition (Letters I, III, IV only)
+    const seq = def.letters;
+    if (!seq || seq.length === 0 || def.pods.length === 0) { this.letterEntities = []; return; }
+
+    const start = def.playerStart;
+    const pod   = def.pods[0];
+    const n     = seq.length;
+    // Distribute evenly from 20% to 85% along the start→pod line
+    // (avoids crowding on top of player spawn or inside the pod chamber)
+    this.letterEntities = seq.map((char, i) => {
+      const t = 0.20 + (i / (n - 1 || 1)) * 0.65;
+      return {
+        char,
+        x: start.x + (pod.x - start.x) * t,
+        y: start.y + (pod.y - start.y) * t,
+        collected: false,
+        flashTimer: 0,
+      };
+    });
   }
 
   private async build3DScene(def: LevelData): Promise<void> {
@@ -3385,6 +3464,52 @@ class EchoesGame {
     if (this.subTimer > 0) this.subTimer -= dt;
     if (this.glitchTimer > 0) this.glitchTimer -= dt;
     if (this.lvlIdx === 2) this.updateLullaby();
+    this.updateLetters(dt);
+  }
+
+  private updateLetters(dt: number) {
+    if (this.letterEntities.length === 0) return;
+
+    // Tick down flash timers on already-collected letters
+    for (const letter of this.letterEntities) {
+      if (letter.collected && letter.flashTimer > 0) {
+        letter.flashTimer = Math.max(0, letter.flashTimer - dt);
+      }
+    }
+
+    // Find the next uncollected letter (strict-order collection)
+    const nextIdx = this.letterEntities.findIndex(l => !l.collected);
+    if (nextIdx === -1) {
+      // All collected — tick the name-strip display timer
+      if (this.nameStripTimer > 0) {
+        this.nameStripTimer -= dt;
+        if (this.nameStripTimer < 0) this.nameStripTimer = 0;
+      } else {
+        // Fade out
+        this.nameStripAlpha = Math.max(0, this.nameStripAlpha - dt / this.NAME_STRIP_FADE);
+      }
+      return;
+    }
+
+    const next = this.letterEntities[nextIdx];
+    const dist = Math.hypot(next.x - this.px, next.y - this.py);
+    if (dist <= this.LETTER_COLLECT_R) {
+      next.collected = true;
+      next.flashTimer = this.LETTER_FLASH_DUR;
+      if (this.audioReady) this.audio.playLetterEcho();
+
+      // Check if this was the last letter
+      const allDone = this.letterEntities.every(l => l.collected);
+      if (allDone) {
+        // Show full name for NAME_STRIP_HOLD ms, then fade
+        this.nameStripAlpha = 1;
+        this.nameStripTimer = this.NAME_STRIP_HOLD;
+      } else {
+        // Partial name — keep visible at full alpha
+        this.nameStripAlpha = 1;
+        this.nameStripTimer = 0; // no countdown until name is complete
+      }
+    }
   }
 
   private miaProximity = 0; // 0..1, drives Level 4 glitch intensity
@@ -5260,6 +5385,11 @@ class EchoesGame {
     else if (this.nearNoise) this.renderPrompt("[E] SILENCE NOISE SOURCE");
     if (this.subTimer > 0 && this.subtitle) this.renderSubtitle();
 
+    // Gold letter collectibles — projected into viewport
+    this.renderLetters();
+    // Collected-name build-up strip at top of screen
+    this.renderNameStrip();
+
     // Low O2 vignette pulse (only in the viewport area above the panel)
     if (this.o2 < 20) {
       const panelY = Math.floor(GAME_H * 0.80);
@@ -5279,6 +5409,111 @@ class EchoesGame {
     ctx.shadowBlur = 0;
     ctx.fillStyle = "#AAFFFF"; ctx.font = "bold 11px monospace"; ctx.textAlign = "center";
     ctx.fillText("O2", cx, cy + 4); ctx.font = "9px monospace"; ctx.fillText(`${Math.ceil(this.o2)}%`, cx, cy + 15);
+  }
+
+  private renderLetters() {
+    if (this.letterEntities.length === 0) return;
+    const ctx = this.hudCtx;
+    const now = performance.now() / 1000;
+    const panelY = Math.floor(GAME_H * 0.80); // stay above control panel
+
+    for (let i = 0; i < this.letterEntities.length; i++) {
+      const letter = this.letterEntities[i];
+      // Skip letters that were collected and whose flash has expired
+      if (letter.collected && letter.flashTimer <= 0) continue;
+
+      // Project 2D world position to screen via Three.js camera
+      const bob = Math.sin(now * 1.8 + i * 0.9) * 8; // world-unit vertical bob
+      const worldPos = new THREE.Vector3(letter.x * WS, EYE_H * 0.55 + bob * WS, letter.y * WS);
+      const ndcPos = worldPos.clone().project(this.camera);
+
+      // Cull if behind camera or off-screen
+      if (ndcPos.z > 1) continue;
+      const sx = (ndcPos.x * 0.5 + 0.5) * GAME_W;
+      const sy = (-ndcPos.y * 0.5 + 0.5) * GAME_H;
+      if (sx < -60 || sx > GAME_W + 60 || sy < 0 || sy > panelY) continue;
+
+      // Flash animation: letter grows brighter then disappears
+      let alpha = 1;
+      let scale = 1;
+      if (letter.collected && letter.flashTimer > 0) {
+        const t = letter.flashTimer / this.LETTER_FLASH_DUR; // 1→0
+        alpha = t < 0.2 ? t / 0.2 : 1;  // quick fade-out at end
+        scale = 1 + (1 - t) * 1.2;       // grows while flashing
+      }
+
+      const fontSize = Math.round(28 * scale);
+
+      // Soft gold radial glow halo
+      const glowR = 26 * scale;
+      const grd = ctx.createRadialGradient(sx, sy, 0, sx, sy, glowR);
+      grd.addColorStop(0, `rgba(255,215,60,${0.35 * alpha})`);
+      grd.addColorStop(1, `rgba(255,180,0,0)`);
+      ctx.fillStyle = grd;
+      ctx.beginPath();
+      ctx.arc(sx, sy, glowR, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Letter glyph
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.font = `bold ${fontSize}px monospace`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.shadowColor = "#FFD700";
+      ctx.shadowBlur = letter.collected ? 22 : 10;
+      ctx.fillStyle = letter.collected ? "#FFFFFF" : "#FFD700";
+      ctx.fillText(letter.char, sx, sy);
+      ctx.shadowBlur = 0;
+      ctx.restore();
+    }
+  }
+
+  private renderNameStrip() {
+    if (this.nameStripAlpha <= 0) return;
+    const ctx = this.hudCtx;
+
+    const collectedLetters = this.letterEntities.filter(l => l.collected);
+    if (collectedLetters.length === 0) return;
+
+    const nameText = collectedLetters.map(l => l.char).join(" ");
+    const allDone   = collectedLetters.length === this.letterEntities.length;
+
+    // Determine effective alpha: full during partial, use nameStripAlpha during fade
+    const alpha = allDone ? this.nameStripAlpha : Math.min(1, this.nameStripAlpha);
+
+    const cx = GAME_W / 2;
+    const cy = allDone ? 52 : 50; // slightly lower when complete (more prominent)
+    const fontSize = allDone ? 26 : 20;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+
+    // Background pill
+    ctx.font = `bold ${fontSize}px monospace`;
+    const tw = ctx.measureText(nameText).width;
+    const pw = tw + 32, ph = fontSize + 14;
+    const px = cx - pw / 2, py = cy - ph / 2;
+    ctx.fillStyle = "rgba(0,8,20,0.72)";
+    ctx.beginPath();
+    ctx.roundRect(px, py, pw, ph, 6);
+    ctx.fill();
+    ctx.strokeStyle = `rgba(255,200,40,${0.45})`;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(px, py, pw, ph, 6);
+    ctx.stroke();
+
+    // Gold text with glow
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.shadowColor = "#FFD700";
+    ctx.shadowBlur = allDone ? 18 : 8;
+    ctx.fillStyle = allDone ? "#FFE87A" : "#FFD700";
+    ctx.fillText(nameText, cx, cy);
+    ctx.shadowBlur = 0;
+
+    ctx.restore();
   }
 
   private renderNoiseBar(x: number, y: number) {
