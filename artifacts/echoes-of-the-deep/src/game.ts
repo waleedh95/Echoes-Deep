@@ -393,6 +393,82 @@ class AudioSys {
     osc.type = "sine"; osc.frequency.value = 440; g.gain.value = 0.26;
     osc.connect(g); g.connect(this.master); osc.start(); osc.stop(this.ctx.currentTime + 4);
   }
+
+  // ----- HULL STRESS — procedural metallic groaning & creaking from deep-sea pressure -----
+  private hullStressGain: GainNode | null = null;
+
+  initHullStress() {
+    if (!this.ctx || !this.master || this.hullStressGain) return;
+    this.hullStressGain = this.ctx.createGain();
+    this.hullStressGain.gain.value = 0;
+    this.hullStressGain.connect(this.master);
+  }
+
+  setHullStressDepthGain(depthNorm: number) {
+    if (!this.ctx || !this.hullStressGain) return;
+    // Ramp up gain as depth increases (silent at surface, full at abyss)
+    const target = Math.max(0, Math.min(1, (depthNorm - 0.25) / 0.65)) * 0.65;
+    this.hullStressGain.gain.linearRampToValueAtTime(target, this.ctx.currentTime + 2.0);
+  }
+
+  // Groan — slow attack resonant metallic sound for depth-triggered stress
+  hullGroan() {
+    if (!this.ctx || !this.hullStressGain) return;
+    const ctx = this.ctx;
+    const t0 = ctx.currentTime;
+    const dur = 1.6 + Math.random() * 1.4;
+    // Three resonant bandpass filters at 80, 140, 320 Hz (with organic random offset)
+    const centers = [80, 140, 320].map(f => f * (0.82 + Math.random() * 0.36));
+    for (const fc of centers) {
+      const bufLen = Math.ceil(ctx.sampleRate * dur);
+      const noiseBuf = ctx.createBuffer(1, bufLen, ctx.sampleRate);
+      const nd = noiseBuf.getChannelData(0);
+      for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+      const src = ctx.createBufferSource();
+      src.buffer = noiseBuf;
+      const bp = ctx.createBiquadFilter();
+      bp.type = "bandpass";
+      bp.frequency.value = fc;
+      bp.Q.value = 9 + Math.random() * 8;
+      // Slow attack, medium release envelope
+      const env = ctx.createGain();
+      env.gain.setValueAtTime(0, t0);
+      env.gain.linearRampToValueAtTime(0.38, t0 + dur * 0.38);
+      env.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+      src.connect(bp); bp.connect(env); env.connect(this.hullStressGain);
+      src.start(t0); src.stop(t0 + dur);
+      src.onended = () => {
+        try { src.disconnect(); bp.disconnect(); env.disconnect(); } catch { /* already gone */ }
+      };
+    }
+  }
+
+  // Creak — short sharp stress pop for sharp-turn trigger (faster envelope)
+  hullCreak() {
+    if (!this.ctx || !this.hullStressGain) return;
+    const ctx = this.ctx;
+    const t0 = ctx.currentTime;
+    const dur = 0.35 + Math.random() * 0.25;
+    const fc = 140 + Math.random() * 180;
+    const bufLen = Math.ceil(ctx.sampleRate * dur);
+    const noiseBuf = ctx.createBuffer(1, bufLen, ctx.sampleRate);
+    const nd = noiseBuf.getChannelData(0);
+    for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+    const src = ctx.createBufferSource();
+    src.buffer = noiseBuf;
+    const bp = ctx.createBiquadFilter();
+    bp.type = "bandpass";
+    bp.frequency.value = fc;
+    bp.Q.value = 14 + Math.random() * 10;
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(0.55, t0);
+    env.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+    src.connect(bp); bp.connect(env); env.connect(this.hullStressGain);
+    src.start(t0); src.stop(t0 + dur);
+    src.onended = () => {
+      try { src.disconnect(); bp.disconnect(); env.disconnect(); } catch { /* already gone */ }
+    };
+  }
   speak(text: string) {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
     if (typeof SpeechSynthesisUtterance === "undefined") return;
@@ -1246,15 +1322,24 @@ function makeHeadlightCookie(): THREE.CanvasTexture {
 function buildParticles(worldW: number, worldH: number): THREE.Points {
   const count = 300;
   const pos = new Float32Array(count * 3);
+  const vel = new Float32Array(count * 3); // per-particle base velocities
   for (let i = 0; i < count; i++) {
-    pos[i * 3] = Math.random() * worldW * WS;
+    pos[i * 3]     = Math.random() * worldW * WS;
     pos[i * 3 + 1] = Math.random() * WALL_H;
     pos[i * 3 + 2] = Math.random() * worldH * WS;
+    // Gentle lazy drift: slow upward with a tiny random horizontal wobble
+    vel[i * 3]     = (Math.random() - 0.5) * 0.0018;
+    vel[i * 3 + 1] = 0.0008 + Math.random() * 0.0014;
+    vel[i * 3 + 2] = (Math.random() - 0.5) * 0.0018;
   }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
   const mat = new THREE.PointsMaterial({ color: 0x00DDFF, size: 0.06, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false });
-  return new THREE.Points(geo, mat);
+  const pts = new THREE.Points(geo, mat);
+  pts.userData.vel = vel;
+  pts.userData.worldW = worldW;
+  pts.userData.worldH = worldH;
+  return pts;
 }
 
 // ============================================================
@@ -1359,6 +1444,13 @@ class EchoesGame {
 
   // Post-processing uniforms that need per-frame updates
   private grainUniforms: { tDiffuse: { value: THREE.Texture | null }; time: { value: number }; intensity: { value: number } } | null = null;
+
+  // Hull stress audio system
+  private hullStressTier = -1;      // 0=shallow 1=mid 2=deep 3=abyss; -1=uninitialised
+  private hullStressTimer = 0;      // ms until next random groan trigger
+  private sharpTurnCooldown = 0;    // ms cooldown after a creak fires
+  private lastYawStress = Math.PI;  // yaw sampled last update for delta-yaw calculation
+  private hullGainRampTimer = 0;    // throttle: only re-ramp gain every 2 s
 
   // RAF
   private rafId = 0; private lastT = 0;
@@ -1532,6 +1624,7 @@ class EchoesGame {
   private ensureAudio() {
     if (this.audioReady) return;
     this.audio.init(); this.audio.resume(); this.audio.startBreathing();
+    this.audio.initHullStress();
     this.audioReady = true;
   }
 
@@ -1573,6 +1666,13 @@ class EchoesGame {
     this.smoothFwd = 0; this.smoothSide = 0;
     this.prevYaw = Math.PI;
     this.cameraRoll = 0; this.cameraPitchOff = 0;
+
+    // Reset hull stress state for new level
+    this.hullStressTier = -1;
+    this.hullStressTimer = 0;
+    this.sharpTurnCooldown = 0;
+    this.lastYawStress = Math.PI;
+    this.hullGainRampTimer = 0;
 
     // Build 3D scene
     this.build3DScene(def);
@@ -1876,6 +1976,7 @@ class EchoesGame {
     this.updatePings3D(dt);
     this.updateFlareMeshes(dt);
     this.updateRevealFade(dt);
+    this.updateHullStress(dt);
     if (this.subTimer > 0) this.subTimer -= dt;
     if (this.glitchTimer > 0) this.glitchTimer -= dt;
   }
@@ -2215,6 +2316,57 @@ class EchoesGame {
       } else {
         mat.opacity = 0;
       }
+    }
+  }
+
+  // ============================================================
+  // HULL STRESS AUDIO (depth-based groans + sharp-turn creaks)
+  // ============================================================
+  private updateHullStress(dt: number) {
+    if (!this.audioReady) return;
+
+    // ── Depth tier: 0=shallow, 1=mid, 2=deep, 3=abyss ──
+    const depth = this.gaugeDisplay.depth; // roughly 20..97
+    const tier = depth < 32 ? 0 : depth < 52 ? 1 : depth < 72 ? 2 : 3;
+
+    // ── Reschedule groan timer when tier changes ──
+    if (tier !== this.hullStressTier) {
+      this.hullStressTier = tier;
+      const baseIntervals = [Infinity, 32000, 19000, 8000]; // ms
+      const jitter       = [0, 8000, 6000, 4000];
+      this.hullStressTimer = baseIntervals[tier] + Math.random() * jitter[tier];
+      // Force an immediate gain ramp on tier change
+      this.hullGainRampTimer = 0;
+    }
+
+    // ── Continuous depth-to-gain mapping (throttled to every ~2 s) ──
+    // This keeps the gain smoothly coupled to actual depth even within a tier.
+    this.hullGainRampTimer -= dt;
+    if (this.hullGainRampTimer <= 0) {
+      const depthNorm = Math.max(0, Math.min(1, (depth - 20) / 77));
+      this.audio.setHullStressDepthGain(depthNorm);
+      this.hullGainRampTimer = 2000; // re-evaluate every 2 s
+    }
+
+    // ── Periodic groan countdown ──
+    if (tier > 0) {
+      this.hullStressTimer -= dt;
+      if (this.hullStressTimer <= 0) {
+        this.audio.hullGroan();
+        const baseIntervals = [Infinity, 32000, 19000, 8000];
+        const jitter       = [0, 8000, 6000, 4000];
+        this.hullStressTimer = baseIntervals[tier] + Math.random() * jitter[tier];
+      }
+    }
+
+    // ── Sharp-turn creak (delta-yaw threshold) ──
+    if (this.sharpTurnCooldown > 0) this.sharpTurnCooldown -= dt;
+    const deltaYaw = Math.abs(this.yaw - this.lastYawStress);
+    this.lastYawStress = this.yaw;
+    // ~0.035 rad/frame @ 60 fps ≈ ~2.1 rad/s — a fast mouse swipe
+    if (deltaYaw > 0.032 && this.sharpTurnCooldown <= 0) {
+      this.audio.hullCreak();
+      this.sharpTurnCooldown = 3000; // 3 s cooldown
     }
   }
 
@@ -2661,13 +2813,79 @@ class EchoesGame {
     // Rotate radar sweep
     if (this.cockpitSweep) this.cockpitSweep.rotation.z += 0.025;
 
-    // Animate particles
+    // Animate particles — velocity-reactive marine snow
     if (this.particleSystem) {
       const pos = (this.particleSystem.geometry.attributes.position as THREE.BufferAttribute).array as Float32Array;
-      for (let i = 1; i < pos.length; i += 3) {
-        pos[i] += 0.0015;
-        if (this.lvlDef && pos[i] > WALL_H) pos[i] = 0.05;
+      const vel = this.particleSystem.userData.vel as Float32Array;
+      const wW  = (this.particleSystem.userData.worldW as number) * WS;
+      const wH  = (this.particleSystem.userData.worldH as number) * WS;
+
+      // Current speed (2D physics units/s)
+      const speed = Math.hypot(this.pvx, this.pvy);
+      const maxSpeed = PLAYER_SPEED * PLAYER_BOOST_MULT;
+      const speedNorm = Math.min(1, speed / maxSpeed); // 0..1
+
+      // Camera forward direction in world XZ
+      const fwdX = -Math.sin(this.yaw);
+      const fwdZ = -Math.cos(this.yaw);
+
+      // Rush effect: apply velocity OPPOSITE to camera forward so particles
+      // stream from ahead, past the porthole, and behind — the correct "rushing through"
+      // sensation.  At rest: only the lazy base drift.  At max speed: ~4× Y + strong
+      // backward-rush bias (opposite forward = toward-then-behind-camera in camera space).
+      const rushY    = 0.0015 + speedNorm * 0.055;   // lazy → streaking upward
+      const rushBack = speedNorm * 0.065;              // particles fly from front → behind camera
+
+      // Scale point size with speed (cheap motion-blur hint)
+      const mat = this.particleSystem.material as THREE.PointsMaterial;
+      mat.size = 0.06 + speedNorm * 0.08;
+
+      const camX = this.px * WS, camZ = this.py * WS;
+      const count = pos.length / 3;
+      for (let i = 0; i < count; i++) {
+        const ix = i * 3, iy = ix + 1, iz = ix + 2;
+        // Move particle: base drift + backward-rush (negative forward = against movement direction)
+        pos[ix] += vel[ix] - fwdX * rushBack;
+        pos[iy] += vel[iy] + rushY;
+        pos[iz] += vel[iz] - fwdZ * rushBack;
+
+        // Y wrap
+        if (pos[iy] > WALL_H) pos[iy] = 0.05;
+        if (pos[iy] < 0) pos[iy] = WALL_H - 0.05;
+        // XZ: particles that have passed behind the camera (distance > 28 units) are
+        // respawned in front so the cone of visible space stays continuously seeded
+        const dx = pos[ix] - camX, dz = pos[iz] - camZ;
+        if (dx * dx + dz * dz > 28 * 28) {
+          // Respawn in a forward cone ahead of the camera
+          const d = 4 + Math.random() * 24;
+          const spread = (Math.random() - 0.5) * 14;
+          const sideX = -fwdZ, sideZ = fwdX; // perpendicular in XZ
+          pos[ix] = camX + fwdX * d + sideX * spread;
+          pos[iz] = camZ + fwdZ * d + sideZ * spread;
+          pos[iy] = Math.random() * WALL_H;
+        }
+        // Hard-clamp to world bounds
+        if (pos[ix] < 0) pos[ix] = wW;
+        if (pos[ix] > wW) pos[ix] = 0;
+        if (pos[iz] < 0) pos[iz] = wH;
+        if (pos[iz] > wH) pos[iz] = 0;
       }
+
+      // ── Speed-based spawn-rate boost ──
+      // At rest 0 extra respawns/frame; at max speed ~2× effective spawn throughput
+      // by seeding additional particles in front of camera each frame.
+      const extraSpawns = Math.round(speedNorm * count * 0.012); // 0 → ~3-4 per frame at max
+      for (let r = 0; r < extraSpawns; r++) {
+        const ri = Math.floor(Math.random() * count);
+        const ix = ri * 3, iy = ix + 1, iz = ix + 2;
+        const d = 2 + Math.random() * 20;
+        const spread = (Math.random() - 0.5) * 14;
+        const sideX = -fwdZ, sideZ = fwdX;
+        pos[ix] = camX + fwdX * d + sideX * spread;
+        pos[iz] = camZ + fwdZ * d + sideZ * spread;
+        pos[iy] = Math.random() * WALL_H;
+      }
+
       this.particleSystem.geometry.attributes.position.needsUpdate = true;
     }
 
