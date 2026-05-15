@@ -2551,6 +2551,13 @@ class EchoesGame {
   private collapseTimer = 0;
   private collapseWhite = 0;
 
+  // Per-level completion tracking (captured at completeLevel())
+  private levelTimes: number[] = [0, 0, 0];        // seconds each level took
+  private levelO2Remaining: number[] = [0, 0, 0];  // O2 at end of each level
+
+  // Cached completion record — loaded once when entering the MENU state
+  private _completionCache: { completedAt: number; levels: Array<{ name: string; depth: string; time: number; o2: number }> } | null | undefined = undefined;
+
   // Analog dashboard state
   private hullIntegrity = 100;
   private hullInDanger = false;  // tracks when hull is in the red zone to fire the sting once
@@ -2781,6 +2788,8 @@ class EchoesGame {
   // LEVEL MANAGEMENT
   // ============================================================
   private startGame() {
+    this.levelTimes = [0, 0, 0];
+    this.levelO2Remaining = [0, 0, 0];
     if (!this.introPlayed) {
       this.introPlayed = true;
       this.startCS(CS_INTRO, () => this.loadLevel(0));
@@ -3243,6 +3252,10 @@ class EchoesGame {
   }
 
   private completeLevel() {
+    // Snapshot this level's time and remaining O2 before transitioning resets them
+    this.levelTimes[this.lvlIdx] = this.lvlTime;
+    this.levelO2Remaining[this.lvlIdx] = this.o2;
+
     if (this.lvlIdx === 0) {
       this.startCS(CS_SARA_TO_NOAH, () => this.showLevelTransition(1, () => this.loadLevel(1)));
     } else if (this.lvlIdx === 1) {
@@ -3263,8 +3276,42 @@ class EchoesGame {
     this.state = "COLLAPSE";
     this.collapseTimer = 0;
     this.collapseWhite = 0;
+
+    // Persist completion record to localStorage
+    const LEVELS = [
+      { name: "Sara",  depth: "20m" },
+      { name: "Noah",  depth: "55m" },
+      { name: "Mia",   depth: "82m" },
+    ];
+    const record = {
+      completedAt: Date.now(),
+      levels: LEVELS.map((l, i) => ({
+        name:    l.name,
+        depth:   l.depth,
+        time:    Math.round(this.levelTimes[i]),
+        o2:      Math.round(this.levelO2Remaining[i]),
+      })),
+    };
+    try { localStorage.setItem("eotd_completion", JSON.stringify(record)); } catch (_) { /* storage unavailable */ }
+    this._completionCache = record; // prime cache so next menu visit doesn't re-parse localStorage
+
     // Mute all game audio and leave only the ventilator — one sound, alone
     if (this.audioReady) this.audio.collapseAudio();
+  }
+
+  private _loadCompletionRecord(): { completedAt: number; levels: Array<{ name: string; depth: string; time: number; o2: number }> } | null {
+    try {
+      const raw = localStorage.getItem("eotd_completion");
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as unknown;
+      if (
+        typeof parsed !== "object" || parsed === null ||
+        typeof (parsed as Record<string, unknown>).completedAt !== "number" ||
+        !Array.isArray((parsed as Record<string, unknown>).levels) ||
+        ((parsed as Record<string, unknown>).levels as unknown[]).length !== 3
+      ) return null;
+      return parsed as { completedAt: number; levels: Array<{ name: string; depth: string; time: number; o2: number }> };
+    } catch (_) { return null; }
   }
 
   private triggerGameOver() {
@@ -5716,6 +5763,72 @@ class EchoesGame {
       'CLICK — SONAR PING    HOLD 1s — LARGE PING    F — FLARE    E — DOCK',
     ];
     ctrls.forEach((c, i) => ctx.fillText(c, GAME_W/2, CY + 30 + i * 16));
+
+    // ── Mission Log ── (visible only after a completed run)
+    // Lazy-init: parse localStorage once per session, cache result thereafter
+    if (this._completionCache === undefined) {
+      this._completionCache = this._loadCompletionRecord();
+    }
+    const rec = this._completionCache;
+    if (rec) {
+      const ML_X = 36;
+      const ML_Y = CY + 58;
+      const ML_W = 330;
+      const ML_H = 88;
+
+      // Panel background
+      ctx.fillStyle = 'rgba(0,20,10,0.72)';
+      ctx.strokeStyle = 'rgba(0,200,100,0.28)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.rect(ML_X, ML_Y, ML_W, ML_H);
+      ctx.fill(); ctx.stroke();
+
+      // Top accent bar
+      ctx.fillStyle = 'rgba(0,200,100,0.18)';
+      ctx.fillRect(ML_X, ML_Y, ML_W, 3);
+
+      // Header
+      ctx.shadowColor = '#00FF88'; ctx.shadowBlur = 8;
+      ctx.fillStyle = 'rgba(0,255,136,0.82)'; ctx.font = 'bold 9px monospace'; ctx.textAlign = 'left';
+      ctx.fillText('MISSION LOG  ——  COMPLETED', ML_X + 10, ML_Y + 14);
+      ctx.shadowBlur = 0;
+
+      // Timestamp
+      const d = new Date(rec.completedAt);
+      const ts = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}  ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+      ctx.fillStyle = 'rgba(120,160,120,0.55)'; ctx.font = '8px monospace'; ctx.textAlign = 'right';
+      ctx.fillText(ts, ML_X + ML_W - 10, ML_Y + 14);
+
+      // Divider
+      ctx.strokeStyle = 'rgba(0,160,80,0.22)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(ML_X + 10, ML_Y + 20); ctx.lineTo(ML_X + ML_W - 10, ML_Y + 20); ctx.stroke();
+
+      // Level rows
+      const ROW_NAMES = ['SARA', 'NOAH', 'MIA'];
+      rec.levels.forEach((lvl, i) => {
+        const ry = ML_Y + 33 + i * 17;
+        const mins = Math.floor(lvl.time / 60);
+        const secs = String(Math.floor(lvl.time % 60)).padStart(2, '0');
+        const timeStr = `${mins}:${secs}`;
+        const o2Str   = `O₂ ${lvl.o2}%`;
+
+        // Name + depth
+        ctx.fillStyle = 'rgba(180,220,190,0.72)'; ctx.font = 'bold 8px monospace'; ctx.textAlign = 'left';
+        ctx.fillText(`${ROW_NAMES[i]}`, ML_X + 10, ry);
+        ctx.fillStyle = 'rgba(120,160,130,0.50)'; ctx.font = '8px monospace';
+        ctx.fillText(`${lvl.depth}`, ML_X + 48, ry);
+
+        // Time
+        ctx.fillStyle = 'rgba(140,200,160,0.60)'; ctx.textAlign = 'center';
+        ctx.fillText(timeStr, ML_X + ML_W * 0.57, ry);
+
+        // O2
+        const o2Color = lvl.o2 > 50 ? 'rgba(0,220,120,0.65)' : lvl.o2 > 20 ? 'rgba(220,180,0,0.65)' : 'rgba(220,60,60,0.65)';
+        ctx.fillStyle = o2Color; ctx.textAlign = 'right';
+        ctx.fillText(o2Str, ML_X + ML_W - 10, ry);
+      });
+    }
 
     // Credits line — bottom-right of panel
     ctx.fillStyle = 'rgba(120,106,70,0.38)'; ctx.font = '9px monospace'; ctx.textAlign = 'right';
