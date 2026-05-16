@@ -268,10 +268,11 @@ const SONAR_FRAG = /* glsl */`
       float spectralT = fract(vWorldPos.x * 0.12 + vWorldPos.z * 0.08 + float(i) * 0.31);
       vec3  specColor = hueRGB(spectralT) * 1.1;   // subdued rainbow
 
-      // Ring front: mostly rainbow + ping-type base
+      // Ring front: mostly rainbow + ping-type base, faintly tinted by object material
       // Grid behind ring: object material color
       float ringFrac   = ringGlow / (glow + 0.001);
-      vec3  fillColor  = mix(uObjectColor * 1.3, uPingColor[i] * 1.2, ringFrac);
+      vec3  ringColor  = mix(uPingColor[i] * 1.2, uObjectColor * 1.2, 0.12);
+      vec3  fillColor  = mix(uObjectColor * 1.3, ringColor, ringFrac);
       col += mix(fillColor, specColor, 0.20 + ringFrac * 0.55) * glow;
     }
 
