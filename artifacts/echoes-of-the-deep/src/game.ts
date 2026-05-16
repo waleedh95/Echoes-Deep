@@ -155,6 +155,29 @@ const INTERACT_RADIUS = 65;
 const AUTO_FORWARD_SPEED = 88;  // px/s constant thrust toward the lifepod
 const AUTO_FORWARD_YAW = -Math.PI / 2; // camera always faces +px direction
 
+// ── Leviathan 4-state AI constants ───────────────────────────────────────────
+const LEV_HEAR_SMALL_PING  = 900;   // px — small sonar ping alert radius
+const LEV_HEAR_LARGE_PING  = 99999; // covers whole level
+const LEV_HEAR_COLLISION   = 450;   // wall/rock impact radius
+const LEV_HEAR_FULL_SPEED  = 300;   // full-speed movement noise radius
+const LEV_HEAR_FLARE       = 800;   // flare redirect radius
+const LEV_ALERT_TIMEOUT    = 5000;  // ms — Alert → Patrol if no re-trigger
+const LEV_HUNT_LOSS_TIME   = 8000;  // ms near-stillness before Hunt → Patrol
+const LEV_PLAYER_SLOW_FRAC = 0.5;   // fraction of max speed = "slow"
+const LEV_ATTACK_DIST      = 90;    // px — ram range trigger
+const LEV_ATTACK_COOLDOWN  = 2200;  // ms — min gap between rams
+const LEV_ATTACK_HULL_DMG  = 22;    // hull damage per ram
+const LEV_ATTACK_O2_DMG    = 18;    // O2 loss per ram
+const LEV_ATTACK_PUSHBACK  = 180;   // px — push-back after ram
+const LEV_SPD_PATROL       = 1.0;   // speed multiplier in Patrol
+const LEV_SPD_ALERT        = 1.4;   // speed multiplier in Alert
+const LEV_SPD_HUNT         = 1.9;   // base Hunt speed
+const LEV_SPD_HUNT_CLOSE   = 2.8;   // Hunt speed when close to player
+const LEV_HUNT_CLOSE_DIST  = 380;   // px — distance where speed ramps up
+const LEV_SPEED_NOISE_INTV = 220;   // ms between full-speed sound events
+const LEV_OCCLUDER_MIN     = 140;   // px min dimension to count as occluder
+const LEV_PROX_MAX_DIST    = 900;   // px — beyond this distance prox volume = 0
+
 // 3D visual constants
 const WS = 0.05;          // world scale: 1px → 0.05 Three.js units
 const EYE_H = 1.5;        // camera eye height
@@ -292,10 +315,22 @@ interface FlareMesh { mesh: THREE.Mesh; light: THREE.PointLight }
 interface Enemy {
   x: number; y: number; type: "drifter" | "stalker" | "leviathan";
   waypoints: Vec2[]; wpIdx: number; speed: number;
-  state: "patrol" | "alert" | "hunt";
+  state: "patrol" | "alert" | "hunt" | "attacking";
   visTimer: number; hitR: number; listenTimer: number; damagedAt: number;
   roarTimer?: number;
   hearingDist?: number; alertDist?: number;
+  // Leviathan 4-state AI fields
+  lastSoundOrigin?: Vec2;    // world pos of last triggering sound event
+  alertTimer?: number;       // ms countdown while in Alerted — returns to Patrol if expires
+  lostSignalTimer?: number;  // ms of near-stillness while Hunting — decay to Patrol at 8s
+  attackCooldown?: number;   // ms before can Attack again
+  proximityVolume?: number;  // 0..1 ventilator gain for this leviathan
+}
+
+interface SoundEvent {
+  type: "small_ping" | "large_ping" | "collision" | "full_speed" | "flare";
+  x: number; y: number;
+  radius: number;
 }
 interface Lifepod { x: number; y: number; id: string; rescued: boolean; revealTimer: number; character: string; commsLine: string }
 interface NoiseObj { x: number; y: number; id: string; silenced: boolean; noiseRate: number; revealTimer: number }
@@ -832,6 +867,131 @@ class AudioSys {
         out.disconnect(); lp.disconnect();
       } catch { /* nodes already disconnected */ }
     };
+  }
+
+  // ── LEVIATHAN DETECTION SCREECH — sharp alien shriek fired on Patrol→Alert ──
+  leviathanDetectionScreech() {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx; const t0 = ctx.currentTime;
+    const out = ctx.createGain();
+    out.gain.setValueAtTime(0.6, t0);
+    out.gain.exponentialRampToValueAtTime(0.001, t0 + 0.7);
+    // Frequency-modulated shriek: fast descending sweep + harmonic overtones
+    const osc1 = ctx.createOscillator(); osc1.type = "sawtooth";
+    osc1.frequency.setValueAtTime(1800, t0);
+    osc1.frequency.exponentialRampToValueAtTime(340, t0 + 0.65);
+    const lfo = ctx.createOscillator(); lfo.type = "sine"; lfo.frequency.value = 28;
+    const lfoG = ctx.createGain(); lfoG.gain.value = 240;
+    lfo.connect(lfoG); lfoG.connect(osc1.frequency);
+    const bp = ctx.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = 1100; bp.Q.value = 1.5;
+    const g1 = ctx.createGain(); g1.gain.value = 0.65;
+    osc1.connect(bp); bp.connect(g1); g1.connect(out);
+    // Noise burst — adds guttural gravel texture
+    const nLen = Math.ceil(ctx.sampleRate * 0.55);
+    const nBuf = ctx.createBuffer(1, nLen, ctx.sampleRate);
+    const nd = nBuf.getChannelData(0);
+    for (let i = 0; i < nd.length; i++) nd[i] = (Math.random() * 2 - 1);
+    const nSrc = ctx.createBufferSource(); nSrc.buffer = nBuf;
+    const nFlt = ctx.createBiquadFilter(); nFlt.type = "bandpass"; nFlt.frequency.value = 620; nFlt.Q.value = 2.5;
+    const nG = ctx.createGain(); nG.gain.value = 0.35;
+    nSrc.connect(nFlt); nFlt.connect(nG); nG.connect(out);
+    // Sub-bass punch to feel the creature lurch
+    const sub = ctx.createOscillator(); sub.type = "sine";
+    sub.frequency.setValueAtTime(95, t0); sub.frequency.exponentialRampToValueAtTime(28, t0 + 0.55);
+    const subG = ctx.createGain(); subG.gain.value = 0.45;
+    sub.connect(subG); subG.connect(out);
+    const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 3200;
+    out.connect(lp); lp.connect(this.master);
+    osc1.start(t0); osc1.stop(t0 + 0.7);
+    lfo.start(t0); lfo.stop(t0 + 0.7);
+    nSrc.start(t0); nSrc.stop(t0 + 0.55);
+    sub.start(t0); sub.stop(t0 + 0.55);
+    nSrc.onended = () => { try { osc1.disconnect(); lfo.disconnect(); lfoG.disconnect(); bp.disconnect(); g1.disconnect(); nSrc.disconnect(); nFlt.disconnect(); nG.disconnect(); sub.disconnect(); subG.disconnect(); out.disconnect(); lp.disconnect(); } catch { /**/ } };
+  }
+
+  // ── LEVIATHAN ATTACK BURST — violent impact boom on ram ──
+  leviathanAttackBurst() {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx; const t0 = ctx.currentTime;
+    // Deep sub-bass impact
+    const subOsc = ctx.createOscillator(); subOsc.type = "sine";
+    subOsc.frequency.setValueAtTime(62, t0); subOsc.frequency.exponentialRampToValueAtTime(22, t0 + 0.55);
+    const subG = ctx.createGain();
+    subG.gain.setValueAtTime(0.8, t0); subG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.55);
+    subOsc.connect(subG); subG.connect(this.master);
+    subOsc.start(t0); subOsc.stop(t0 + 0.6);
+    // Noise burst — body impact texture
+    const nLen = Math.ceil(ctx.sampleRate * 0.38);
+    const nBuf = ctx.createBuffer(1, nLen, ctx.sampleRate);
+    const nd = nBuf.getChannelData(0);
+    for (let i = 0; i < nd.length; i++) nd[i] = (Math.random() * 2 - 1);
+    const nSrc = ctx.createBufferSource(); nSrc.buffer = nBuf;
+    const nLp = ctx.createBiquadFilter(); nLp.type = "lowpass"; nLp.frequency.value = 300;
+    const nG = ctx.createGain();
+    nG.gain.setValueAtTime(0.7, t0); nG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.38);
+    nSrc.connect(nLp); nLp.connect(nG); nG.connect(this.master);
+    nSrc.start(t0); nSrc.stop(t0 + 0.38);
+    // High guttural screech burst after impact
+    const scOsc = ctx.createOscillator(); scOsc.type = "sawtooth";
+    scOsc.frequency.setValueAtTime(220, t0 + 0.06); scOsc.frequency.exponentialRampToValueAtTime(85, t0 + 0.65);
+    const scBp = ctx.createBiquadFilter(); scBp.type = "bandpass"; scBp.frequency.value = 380; scBp.Q.value = 3;
+    const scG = ctx.createGain();
+    scG.gain.setValueAtTime(0, t0); scG.gain.linearRampToValueAtTime(0.55, t0 + 0.08); scG.gain.exponentialRampToValueAtTime(0.001, t0 + 0.7);
+    scOsc.connect(scBp); scBp.connect(scG); scG.connect(this.master);
+    scOsc.start(t0 + 0.06); scOsc.stop(t0 + 0.75);
+    nSrc.onended = () => { try { subOsc.disconnect(); subG.disconnect(); nSrc.disconnect(); nLp.disconnect(); nG.disconnect(); scOsc.disconnect(); scBp.disconnect(); scG.disconnect(); } catch { /**/ } };
+  }
+
+  // ── LEVIATHAN PROXIMITY BREATHING — continuous ventilator layer tied to distance ──
+  private levProxGain: GainNode | null = null;
+  private levProxMaster: GainNode | null = null;
+
+  initLeviathanProx() {
+    if (!this.ctx || !this.master || this.levProxGain) return;
+    const ctx = this.ctx;
+    this.levProxMaster = ctx.createGain(); this.levProxMaster.gain.value = 0;
+    this.levProxMaster.connect(this.master);
+    // Low mechanical hum base
+    const humOsc = ctx.createOscillator(); humOsc.type = "square"; humOsc.frequency.value = 42;
+    const humFlt = ctx.createBiquadFilter(); humFlt.type = "lowpass"; humFlt.frequency.value = 110;
+    const humG = ctx.createGain(); humG.gain.value = 0.028;
+    humOsc.connect(humFlt); humFlt.connect(humG); humG.connect(this.levProxMaster); humOsc.start();
+    // Creature breath noise layer
+    const nBuf = ctx.createBuffer(1, ctx.sampleRate * 4, ctx.sampleRate);
+    const nd = nBuf.getChannelData(0);
+    for (let i = 0; i < nd.length; i++) nd[i] = (Math.random() * 2 - 1);
+    const nSrc = ctx.createBufferSource(); nSrc.buffer = nBuf; nSrc.loop = true;
+    const nFlt = ctx.createBiquadFilter(); nFlt.type = "bandpass"; nFlt.frequency.value = 160; nFlt.Q.value = 1.2;
+    this.levProxGain = ctx.createGain(); this.levProxGain.gain.value = 0;
+    nSrc.connect(nFlt); nFlt.connect(this.levProxGain); this.levProxGain.connect(this.levProxMaster);
+    nSrc.start();
+  }
+
+  setLeviathanProxVolume(vol: number) {
+    if (!this.ctx || !this.levProxMaster) return;
+    const target = Math.max(0, Math.min(1, vol));
+    this.levProxMaster.gain.linearRampToValueAtTime(target, this.ctx.currentTime + 0.18);
+    if (this.levProxGain) this.levProxGain.gain.linearRampToValueAtTime(target * 0.55, this.ctx.currentTime + 0.18);
+  }
+
+  // ── LEVIATHAN ALERT LAYER — mid-urgency thrum when creature is investigating ──
+  private levAlertGain: GainNode | null = null;
+
+  initLeviathanAlert() {
+    if (!this.ctx || !this.master || this.levAlertGain) return;
+    const ctx = this.ctx;
+    this.levAlertGain = ctx.createGain(); this.levAlertGain.gain.value = 0;
+    this.levAlertGain.connect(this.master);
+    // Low sawtooth thrum at 28 Hz to create a continuous dread rumble (distinct from prox breathing)
+    const osc = ctx.createOscillator(); osc.type = "sawtooth"; osc.frequency.value = 28;
+    const flt = ctx.createBiquadFilter(); flt.type = "lowpass"; flt.frequency.value = 75;
+    const g = ctx.createGain(); g.gain.value = 0.022;
+    osc.connect(flt); flt.connect(g); g.connect(this.levAlertGain); osc.start();
+  }
+
+  setLeviathanAlertVolume(vol: number) {
+    if (!this.ctx || !this.levAlertGain) return;
+    this.levAlertGain.gain.linearRampToValueAtTime(Math.max(0, Math.min(0.55, vol)), this.ctx.currentTime + 0.5);
   }
 
   metallicScreech(delay = 0) {
@@ -1428,6 +1588,10 @@ function level3(): LevelData {
       { x: 1900, y: 1500, type: "stalker",
         waypoints: [{ x: 1600, y: 1200 }, { x: 2200, y: 1200 }, { x: 2200, y: 1800 }, { x: 1600, y: 1800 }],
         wpIdx: 0, speed: 56, hitR: 26, hearingDist: 860, alertDist: 660 },
+      // Deep-zone Leviathan — 4-state hunt AI, patrols the entire mid and deep sectors
+      { x: 1600, y: 1000, type: "leviathan",
+        waypoints: [{ x: 900, y: 500 }, { x: 2150, y: 400 }, { x: 2200, y: 1500 }, { x: 1200, y: 1750 }, { x: 300, y: 1000 }],
+        wpIdx: 0, speed: 55, hitR: 42, hearingDist: 920, alertDist: 720 },
     ],
     pods: [{ x: 1250, y: 1700, id: "mia", rescued: false, revealTimer: 0, character: "MIA", commsLine: '"I Will Miss You Dad."' }],
     letters: ["M","I","A"],
@@ -2550,6 +2714,10 @@ class EchoesGame {
   // Noise
   private noise = 0; private alarmTimer = 0;
 
+  // Sound events (populated each frame, consumed by leviathan AI, cleared at end of update)
+  private soundEvents: SoundEvent[] = [];
+  private levSpeedNoiseTimer = 0; // countdown until next full-speed sound event (ms)
+
   // Level objects (2D logic)
   private enemies: Enemy[] = [];
   private pods: Lifepod[] = [];
@@ -2861,6 +3029,7 @@ class EchoesGame {
     this.o2 = def.o2Start; this.flares = def.flares ?? 3;
     this.invTimer = 0; this.glitchTimer = 0;
     this.noise = 0; this.alarmTimer = 0; this.lvlTime = 0;
+    this.soundEvents = []; this.levSpeedNoiseTimer = 0;
     this.pings = []; this.flareObjs = [];
     this.puzzleDone = false; this.transitioning = false;
     this.discoveryPhase = "done"; this.discoveryTimer = 0; this.discoveryPodAfter = null;
@@ -2899,6 +3068,8 @@ class EchoesGame {
     this.audio.resetBreathingTier();
     // Set ambient creak density/gain for this level
     if (this.audioReady) this.audio.setAmbientCreakLevel(idx);
+    // Initialise leviathan proximity breath node and alert thrum layer
+    if (this.audioReady) { this.audio.initLeviathanProx(); this.audio.initLeviathanAlert(); }
 
     // Reset hull stress state for new level
     this.hullStressTier = -1;
@@ -3185,6 +3356,8 @@ class EchoesGame {
     const maxR = type === "small" ? SONAR_SMALL_R : SONAR_LARGE_R;
     const speed = type === "small" ? 240 : 520; // large ping sweeps whole map in ~7 s
     this.noise = Math.min(100, this.noise + (type === "small" ? SONAR_SMALL_NOISE : SONAR_LARGE_NOISE));
+    // Emit discrete sound event for leviathan hearing system
+    this.soundEvents.push({ type: type === "small" ? "small_ping" : "large_ping", x: this.px, y: this.py, radius: type === "small" ? LEV_HEAR_SMALL_PING : LEV_HEAR_LARGE_PING });
     this.audio.sonar(type);
     this.sonarCharge = 0; // drain fully — must wait for complete recharge before next ping
     this.sonarSwitchAnim = 200;
@@ -3252,8 +3425,11 @@ class EchoesGame {
   private dropFlare() {
     if (this.flares <= 0) return;
     this.flares--;
-    this.flareObjs.push({ x: this.px, y: this.py, vy: 18, timer: FLARE_DURATION, pingTimer: 0 });
+    const flareX = this.px, flareY = this.py;
+    this.flareObjs.push({ x: flareX, y: flareY, vy: 18, timer: FLARE_DURATION, pingTimer: 0 });
     this.noise = Math.min(100, this.noise + 5);
+    // Flare sound event — redirects any hunting Leviathan toward the flare landing position
+    this.soundEvents.push({ type: "flare", x: flareX, y: flareY, radius: LEV_HEAR_FLARE });
     this.audio.flare();
     this.flareSwitchAnim = 200;
     this.valveFlareAngle += Math.PI * 0.75;
@@ -3451,10 +3627,10 @@ class EchoesGame {
     this.updateDialogue();
     this.updatePlayer(dt);
     this.updateCameraPhysics(dt);
-    this.updateEnemies(dt);
+    this.updateFlares(dt);    // emit flare events BEFORE enemies consume them this frame
+    this.updateEnemies(dt);   // consume all sound events (sonar, collision, movement, flares)
     this.updatePings(dt);
-    this.updateFlares(dt);
-    this.updateNoise(dt);
+    this.updateNoise(dt);     // clear soundEvents at end of frame
     this.updateO2(dt);
     this.updateDashboard(dt);
     this.updateCamera(dt);
@@ -3667,6 +3843,15 @@ class EchoesGame {
     this.px = Math.max(PLAYER_SIZE + 2, Math.min(def.worldW - PLAYER_SIZE - 2, rx));
     this.py = Math.max(PLAYER_SIZE + 2, Math.min(def.worldH - PLAYER_SIZE - 2, ry));
 
+    // Full-speed movement emits periodic sound events for Leviathan alerting
+    this.levSpeedNoiseTimer -= dt;
+    if (this.levSpeedNoiseTimer <= 0 && speed > PLAYER_SPEED * LEV_PLAYER_SLOW_FRAC) {
+      this.levSpeedNoiseTimer = LEV_SPEED_NOISE_INTV;
+      this.soundEvents.push({ type: "full_speed", x: this.px, y: this.py, radius: LEV_HEAR_FULL_SPEED });
+    } else if (speed <= PLAYER_SPEED * LEV_PLAYER_SLOW_FRAC) {
+      this.levSpeedNoiseTimer = 0;
+    }
+
     // ── Hull collision damage ──
     if (this.hullDamageCooldown > 0) this.hullDamageCooldown -= dt;
 
@@ -3696,6 +3881,8 @@ class EchoesGame {
 
       // Metallic impact sound
       if (this.audioReady) this.audio.impact(isDirect ? "direct" : "graze");
+      // Collision sound event for leviathan alerting (direct impact only — grazes are quiet)
+      if (isDirect) this.soundEvents.push({ type: "collision", x: this.px, y: this.py, radius: LEV_HEAR_COLLISION });
     }
   }
 
@@ -3742,61 +3929,59 @@ class EchoesGame {
 
   private updateEnemies(dt: number) {
     const dtS = dt / 1000;
+    const playerSpeed = Math.hypot(this.pvx, this.pvy);
+    const playerIsSlow = playerSpeed < PLAYER_SPEED * LEV_PLAYER_SLOW_FRAC;
+
     for (let i = 0; i < this.enemies.length; i++) {
       const e = this.enemies[i];
       if (e.visTimer > 0) e.visTimer -= dt;
       const dist = Math.hypot(e.x - this.px, e.y - this.py);
-      const hearingDist = e.hearingDist ?? 700;
-      const alertDist   = e.alertDist   ?? 500;
-      if (this.noise >= 61 && dist < hearingDist) e.state = "hunt";
-      else if (this.noise >= 31 && dist < alertDist) e.state = "alert";
-      else e.state = "patrol";
 
-      let tx: number, ty: number, sm = 1;
-      if (e.state === "hunt") { tx = this.px; ty = this.py; sm = 1.9; }
-      else { const wp = e.waypoints[e.wpIdx]; tx = wp.x; ty = wp.y; sm = e.state === "alert" ? 1.4 : 1; }
-
-      const pausing = e.type === "stalker" && e.state === "alert" && e.listenTimer > 0;
-      if (!pausing) {
-        const edx = tx - e.x, edy = ty - e.y, ed = Math.hypot(edx, edy);
-        if (ed > 6) { e.x += (edx / ed) * e.speed * sm * dtS; e.y += (edy / ed) * e.speed * sm * dtS; }
-        else if (e.state !== "hunt") { e.wpIdx = (e.wpIdx + 1) % e.waypoints.length; if (e.type === "stalker") e.listenTimer = 1800; }
-      }
-      if (e.type === "stalker" && e.state === "alert" && e.listenTimer > 0) e.listenTimer -= dt;
-
-      // Player hit
-      if (this.invTimer <= 0 && dist < e.hitR + PLAYER_SIZE * 0.8) {
-        this.o2 = Math.max(0, this.o2 - O2_LOSS_HIT); this.invTimer = 2200;
-        this.glitchTimer = 700; this.noise = Math.min(100, this.noise + 20);
-        this.hullIntegrity = Math.max(0, this.hullIntegrity - 14);
-        // Spring overshoot kick — needle slams past new value then bounces back
-        this.gaugeVelocity.hull -= 55;
-        this.gaugeVelocity.o2   -= 30;
-        this.hullBezelFlash = 480;
-        this.audio.damage(); this.showSub("[ HULL BREACH — OXYGEN DEPLETED ]");
-        if (e.type === "leviathan") this.audio.leviathanRoar(2);
-      }
-      // Periodic leviathan roar when hunting (scary stalking growl)
       if (e.type === "leviathan") {
-        e.roarTimer = (e.roarTimer ?? 0) - dt;
-        if (e.roarTimer <= 0) {
-          // Roar more often when hunting, occasionally when alert, rarely when patrolling
-          const interval = e.state === "hunt" ? 3500 : e.state === "alert" ? 7000 : 14000;
-          e.roarTimer = interval + Math.random() * 1500;
-          this.audio.leviathanRoar(e.state === "hunt" ? 2 : 1);
+        // ── 4-state Leviathan AI ─────────────────────────────────────────────
+        this._updateLeviathanAI(e, dt, dtS, dist, playerIsSlow);
+      } else {
+        // ── Drifter / Stalker: original 3-threshold noise system ─────────────
+        const hearingDist = e.hearingDist ?? 700;
+        const alertDist   = e.alertDist   ?? 500;
+        if (this.noise >= 61 && dist < hearingDist) e.state = "hunt";
+        else if (this.noise >= 31 && dist < alertDist) e.state = "alert";
+        else e.state = "patrol";
+
+        let tx: number, ty: number, sm = 1;
+        if (e.state === "hunt") { tx = this.px; ty = this.py; sm = 1.9; }
+        else { const wp = e.waypoints[e.wpIdx]; tx = wp.x; ty = wp.y; sm = e.state === "alert" ? 1.4 : 1; }
+
+        const pausing = e.type === "stalker" && e.state === "alert" && e.listenTimer > 0;
+        if (!pausing) {
+          const edx = tx - e.x, edy = ty - e.y, ed = Math.hypot(edx, edy);
+          if (ed > 6) { e.x += (edx / ed) * e.speed * sm * dtS; e.y += (edy / ed) * e.speed * sm * dtS; }
+          else if (e.state !== "hunt") { e.wpIdx = (e.wpIdx + 1) % e.waypoints.length; if (e.type === "stalker") e.listenTimer = 1800; }
+        }
+        if (e.type === "stalker" && e.state === "alert" && e.listenTimer > 0) e.listenTimer -= dt;
+
+        // Player hit (drifter/stalker)
+        if (this.invTimer <= 0 && dist < e.hitR + PLAYER_SIZE * 0.8) {
+          this.o2 = Math.max(0, this.o2 - O2_LOSS_HIT); this.invTimer = 2200;
+          this.glitchTimer = 700; this.noise = Math.min(100, this.noise + 20);
+          this.hullIntegrity = Math.max(0, this.hullIntegrity - 14);
+          this.gaugeVelocity.hull -= 55;
+          this.gaugeVelocity.o2   -= 30;
+          this.hullBezelFlash = 480;
+          if (this.audioReady) this.audio.damage();
+          this.showSub("[ HULL BREACH — OXYGEN DEPLETED ]");
         }
       }
+
       if (this.invTimer > 0) this.invTimer -= dt;
 
-      // Sync 3D enemy position — always render, sonar controls brightness
+      // ── 3D visual sync — always render, sonar controls brightness ────────
       if (i < this.enemyObjs.length) {
         const eobj = this.enemyObjs[i];
         const sonarA = Math.min(1, e.visTimer / 900);
-        // Base dim presence (0.08 min) so creature is always faintly visible; spikes on sonar
         const a = Math.max(0.08, sonarA);
         eobj.group.visible = true;
 
-        // Jitter on sonar ping hit: randomize group position offset for 0.5 s
         let jx = 0, jy = 0, jz = 0;
         if (eobj.jitterTimer > 0) {
           eobj.jitterTimer -= dt;
@@ -3805,38 +3990,258 @@ class EchoesGame {
           jy = (Math.random() - 0.5) * jStr * 0.5;
           jz = (Math.random() - 0.5) * jStr;
           if (eobj.jitterTimer <= 0) {
-            // Restore normal color after jitter ends
             for (const m of eobj.mats) m.color.set(0x00FFFF);
           }
         }
         eobj.group.position.set(e.x * WS + jx, EYE_H * 0.5 + jy, e.y * WS + jz);
         eobj.group.rotation.y += 0.012;
 
-        // During jitter: keep red flash; otherwise normal opacity animation
         if (eobj.jitterTimer > 0) {
           const flashPulse = 0.7 + Math.sin(Date.now() / 40) * 0.3;
           for (const mat of eobj.mats) mat.opacity = flashPulse;
         } else {
           for (const mat of eobj.mats) mat.opacity = a * (0.7 + Math.random() * 0.3);
         }
-        // THREAT DETECTED label — only show during sonar reveal
         eobj.labelMat.opacity = sonarA * (0.65 + Math.sin(Date.now() / 180) * 0.35);
-        // Boost the rim light intensity: dim always, bright on sonar
         eobj.group.traverse((child) => {
           if ((child as THREE.PointLight).isPointLight) {
             (child as THREE.PointLight).intensity = 0.3 + sonarA * 2.8;
           }
         });
-        // Pulse bioluminescent stripes (Ghost Leviathan) at medium speed
+
+        // Bioluminescent pulse — state-driven rate for leviathans, fixed for others
         const bioMats = eobj.group.userData.bioMats as THREE.MeshBasicMaterial[] | undefined;
         if (bioMats) {
-          // Medium pulse ~0.6 Hz, range 0.35 .. 1.0, brighter on sonar
-          const pulse = 0.5 + 0.5 * Math.sin(Date.now() / 280);
-          const baseAlpha = 0.35 + pulse * 0.55;
-          for (const m of bioMats) m.opacity = Math.min(1, baseAlpha + sonarA * 0.4);
+          let pulseHz: number, pulseMin: number, pulseRange: number;
+          if (e.type === "leviathan") {
+            if (e.state === "attacking") {
+              // Full intensity flash on impact
+              pulseHz = 1000 / 55; pulseMin = 0.85; pulseRange = 0.15;
+            } else if (e.state === "hunt") {
+              // Rapid near-blinding
+              pulseHz = 1000 / 80; pulseMin = 0.60; pulseRange = 0.40;
+            } else if (e.state === "alert") {
+              // Medium/brighter
+              pulseHz = 1000 / 200; pulseMin = 0.45; pulseRange = 0.45;
+            } else {
+              // Patrol: slow dim heartbeat
+              pulseHz = 1000 / 500; pulseMin = 0.22; pulseRange = 0.38;
+            }
+          } else {
+            pulseHz = 1000 / 280; pulseMin = 0.35; pulseRange = 0.55;
+          }
+          const pulse = 0.5 + 0.5 * Math.sin(Date.now() * pulseHz * Math.PI / 500);
+          const alpha = pulseMin + pulse * pulseRange;
+          for (const m of bioMats) m.opacity = Math.min(1, alpha + sonarA * 0.4);
         }
       }
     }
+  }
+
+  // ── Leviathan 4-state AI ──────────────────────────────────────────────────
+  private _updateLeviathanAI(e: Enemy, dt: number, dtS: number, dist: number, playerIsSlow: boolean) {
+    const hearingDist = e.hearingDist ?? 900;
+    if (e.attackCooldown === undefined) e.attackCooldown = 0;
+    if (e.lostSignalTimer === undefined) e.lostSignalTimer = 0;
+    if (e.alertTimer === undefined) e.alertTimer = 0;
+    if (e.proximityVolume === undefined) e.proximityVolume = 0;
+    if (e.roarTimer === undefined) e.roarTimer = 14000;
+
+    if (e.attackCooldown > 0) e.attackCooldown -= dt;
+
+    switch (e.state) {
+      case "patrol": {
+        // Listen for any sound event in hearing range
+        for (const se of this.soundEvents) {
+          if (Math.hypot(se.x - e.x, se.y - e.y) <= se.radius) {
+            if (se.type === "flare") {
+              e.lastSoundOrigin = { x: se.x, y: se.y };
+            } else {
+              e.lastSoundOrigin = { x: se.x, y: se.y };
+            }
+            e.state = "alert";
+            e.alertTimer = LEV_ALERT_TIMEOUT;
+            if (this.audioReady) this.audio.leviathanDetectionScreech();
+            break;
+          }
+        }
+        if (e.state !== "patrol") break;
+        // Roar rarely while on patrol
+        e.roarTimer -= dt;
+        if (e.roarTimer <= 0) {
+          e.roarTimer = 14000 + Math.random() * 4000;
+          if (this.audioReady) this.audio.leviathanRoar(1);
+        }
+        // Move along patrol waypoints
+        const wp = e.waypoints[e.wpIdx];
+        const edx = wp.x - e.x, edy = wp.y - e.y, ed = Math.hypot(edx, edy);
+        if (ed > 8) {
+          e.x += (edx / ed) * e.speed * LEV_SPD_PATROL * dtS;
+          e.y += (edy / ed) * e.speed * LEV_SPD_PATROL * dtS;
+        } else {
+          e.wpIdx = (e.wpIdx + 1) % e.waypoints.length;
+        }
+        break;
+      }
+
+      case "alert": {
+        // Roar occasionally in alert state
+        e.roarTimer -= dt;
+        if (e.roarTimer <= 0) {
+          e.roarTimer = 7000 + Math.random() * 2500;
+          if (this.audioReady) this.audio.leviathanRoar(1);
+        }
+        // Check for new sound events to re-trigger or redirect
+        for (const se of this.soundEvents) {
+          if (Math.hypot(se.x - e.x, se.y - e.y) <= se.radius) {
+            e.lastSoundOrigin = { x: se.x, y: se.y };
+            e.alertTimer = LEV_ALERT_TIMEOUT;
+            break;
+          }
+        }
+        // Move toward last heard sound origin
+        const origin = e.lastSoundOrigin ?? e.waypoints[e.wpIdx];
+        const odx = origin.x - e.x, ody = origin.y - e.y, od = Math.hypot(odx, ody);
+        const arrivedAtOrigin = od <= 22;
+        if (!arrivedAtOrigin) {
+          e.x += (odx / od) * e.speed * LEV_SPD_ALERT * dtS;
+          e.y += (ody / od) * e.speed * LEV_SPD_ALERT * dtS;
+        }
+        // Escalate to Hunt: player is within hearing range AND either a loud discrete
+        // sound event was just heard (primary, event-driven) or global noise is very
+        // high as a fallback for ambient accumulation (>= 72, stricter than old 48)
+        const heardLoudSignal = this.soundEvents.some(se =>
+          se.type !== "flare" && Math.hypot(se.x - e.x, se.y - e.y) <= se.radius
+        );
+        if (dist < hearingDist && (heardLoudSignal || this.noise >= 72)) {
+          e.state = "hunt";
+          e.lostSignalTimer = 0;
+          if (this.audioReady) this.audio.leviathanRoar(2);
+          break;
+        }
+        // Alert timer countdown — only starts once Leviathan arrives at the sound origin
+        if (arrivedAtOrigin) {
+          e.alertTimer -= dt;
+          if (e.alertTimer <= 0) {
+            e.state = "patrol";
+            e.lastSoundOrigin = undefined;
+          }
+        }
+        break;
+      }
+
+      case "hunt": {
+        // Roar frequently during hunt
+        e.roarTimer -= dt;
+        if (e.roarTimer <= 0) {
+          e.roarTimer = 3500 + Math.random() * 1200;
+          if (this.audioReady) this.audio.leviathanRoar(2);
+        }
+        // Flare event immediately breaks Hunt → Alert toward flare
+        for (const se of this.soundEvents) {
+          if (se.type !== "flare") continue;
+          if (Math.hypot(se.x - e.x, se.y - e.y) <= se.radius) {
+            e.lastSoundOrigin = { x: se.x, y: se.y };
+            e.state = "alert";
+            e.alertTimer = LEV_ALERT_TIMEOUT;
+            e.lostSignalTimer = 0;
+            this.showSub("[ LEVIATHAN REDIRECTED — FLARE DEPLOYED ]", 2500);
+            break;
+          }
+        }
+        if (e.state !== "hunt") break;
+
+        // Lost-signal timer: accumulate while player moves slowly
+        if (playerIsSlow) {
+          e.lostSignalTimer += dt;
+          if (e.lostSignalTimer >= LEV_HUNT_LOSS_TIME) {
+            e.state = "patrol";
+            e.lostSignalTimer = 0;
+            e.lastSoundOrigin = undefined;
+            break;
+          }
+        } else {
+          e.lostSignalTimer = Math.max(0, (e.lostSignalTimer ?? 0) - dt * 0.5);
+        }
+
+        // Obstacle occlusion: wide obstacle between creature and player → brief re-alert
+        if (this._leviathanOccluded(e)) {
+          e.state = "alert";
+          e.lastSoundOrigin = { x: this.px, y: this.py };
+          e.alertTimer = LEV_ALERT_TIMEOUT * 0.45;
+          break;
+        }
+
+        // Speed ramps up as distance closes
+        const closeFrac = Math.max(0, 1 - (dist - e.hitR) / (LEV_HUNT_CLOSE_DIST - e.hitR));
+        const huntSpdMult = LEV_SPD_HUNT + (LEV_SPD_HUNT_CLOSE - LEV_SPD_HUNT) * closeFrac;
+        const hdx = this.px - e.x, hdy = this.py - e.y, hd = Math.hypot(hdx, hdy);
+        if (hd > e.hitR) {
+          e.x += (hdx / hd) * e.speed * huntSpdMult * dtS;
+          e.y += (hdy / hd) * e.speed * huntSpdMult * dtS;
+        }
+        // Trigger Attack when in ram range
+        if (dist < LEV_ATTACK_DIST && e.attackCooldown <= 0) {
+          e.state = "attacking";
+        }
+        break;
+      }
+
+      case "attacking": {
+        // Apply hull & O2 damage once per attack (guarded by invTimer)
+        if (this.invTimer <= 0) {
+          this.hullIntegrity = Math.max(0, this.hullIntegrity - LEV_ATTACK_HULL_DMG);
+          this.o2 = Math.max(0, this.o2 - LEV_ATTACK_O2_DMG);
+          this.invTimer = 2200;
+          this.glitchTimer = 900;
+          this.gaugeVelocity.hull -= 75;
+          this.gaugeVelocity.o2   -= 40;
+          this.hullBezelFlash = 700;
+          this.shakeTimer = 520;
+          this.shakeDuration = 520;
+          this.shakeIntensity = 0.13;
+          if (this.audioReady) this.audio.leviathanAttackBurst();
+          this.showSub("[ LEVIATHAN IMPACT — HULL BREACHED ]", 2500);
+          // Push leviathan back away from player
+          const pushD = Math.hypot(e.x - this.px, e.y - this.py);
+          if (pushD > 1) {
+            e.x += ((e.x - this.px) / pushD) * LEV_ATTACK_PUSHBACK;
+            e.y += ((e.y - this.py) / pushD) * LEV_ATTACK_PUSHBACK;
+          } else {
+            e.x += LEV_ATTACK_PUSHBACK;
+          }
+        }
+        e.attackCooldown = LEV_ATTACK_COOLDOWN;
+        // Immediately return to Hunt — Leviathan is relentless
+        e.state = "hunt";
+        break;
+      }
+    }
+  }
+
+  // Returns true if any large obstacle blocks the direct line between leviathan and player
+  private _leviathanOccluded(e: Enemy): boolean {
+    if (!this.lvlDef) return false;
+    for (const o of this.lvlDef.obstacles) {
+      if (o.w < LEV_OCCLUDER_MIN && o.h < LEV_OCCLUDER_MIN) continue;
+      if (this._segIntersectsRect(e.x, e.y, this.px, this.py, o)) return true;
+    }
+    return false;
+  }
+
+  // Liang-Barsky segment-rectangle intersection (returns true if they intersect)
+  private _segIntersectsRect(x1: number, y1: number, x2: number, y2: number, r: Rect): boolean {
+    const dx = x2 - x1, dy = y2 - y1;
+    const xmin = r.x, xmax = r.x + r.w, ymin = r.y, ymax = r.y + r.h;
+    let tmin = 0, tmax = 1;
+    const pairs: [number, number][] = [[-dx, x1 - xmin], [dx, xmax - x1], [-dy, y1 - ymin], [dy, ymax - y1]];
+    for (const [p, q] of pairs) {
+      if (p === 0) { if (q < 0) return false; continue; }
+      const t = q / p;
+      if (p < 0) { if (t > tmax) return false; tmin = Math.max(tmin, t); }
+      else { if (t < tmin) return false; tmax = Math.min(tmax, t); }
+    }
+    return tmin <= tmax;
   }
 
   private updatePings(dt: number) {
@@ -3950,6 +4355,9 @@ class EchoesGame {
         f.pingTimer = FLARE_PING_INTERVAL;
         this._spawnPing(f.x, f.y, 80, 60, 0xFF8800, "flare");
         this.noise = Math.min(100, this.noise + 3);
+        // Re-emit flare sound event from flare's current drifting position each ping cycle
+        // so Leviathan continuously updates its redirect target as the flare moves
+        this.soundEvents.push({ type: "flare", x: f.x, y: f.y, radius: LEV_HEAR_FLARE });
       }
       if (f.timer <= 0) this.flareObjs.splice(i, 1);
     }
@@ -3958,6 +4366,8 @@ class EchoesGame {
   private updateNoise(dt: number) {
     this.noise = Math.max(0, this.noise - NOISE_DECAY * (dt / 1000));
     for (const o of this.noiseObjs) if (!o.silenced) this.noise = Math.min(100, this.noise + o.noiseRate * (dt / 1000));
+    // Sound events are consumed once per frame by the leviathan AI — clear after each tick
+    this.soundEvents = [];
   }
 
   private updateO2(dt: number) {
@@ -3988,12 +4398,32 @@ class EchoesGame {
   }
 
   private updateLeviathan(dt: number) {
-    if (this.lvlIdx !== 2) return;
-    this.levPulseTimer -= dt;
-    if (this.levPulseTimer <= 0) {
-      this.levPulseTimer = 8000; this.levBlocked = true; this.glitchTimer = 1400;
-      setTimeout(() => { this.levBlocked = false; }, 1100);
-      this.showSub("[ LEVIATHAN PULSE — SONAR DISRUPTED ]");
+    // Sonar disruption pulse (level 2 only — the drifting ghost encounter)
+    if (this.lvlIdx === 2) {
+      this.levPulseTimer -= dt;
+      if (this.levPulseTimer <= 0) {
+        this.levPulseTimer = 8000; this.levBlocked = true; this.glitchTimer = 1400;
+        setTimeout(() => { this.levBlocked = false; }, 1100);
+        this.showSub("[ LEVIATHAN PULSE — SONAR DISRUPTED ]");
+      }
+    }
+    // Proximity audio: closest hunting/attacking leviathan drives the breath node volume
+    // Alert audio layer: activate when any leviathan is investigating
+    if (this.audioReady) {
+      let minHuntDist = Infinity;
+      let hasAlert = false;
+      for (const e of this.enemies) {
+        if (e.type !== "leviathan") continue;
+        if (e.state === "hunt" || e.state === "attacking") {
+          const d = Math.hypot(e.x - this.px, e.y - this.py);
+          if (d < minHuntDist) minHuntDist = d;
+        }
+        if (e.state === "alert") hasAlert = true;
+      }
+      const proxVol = minHuntDist === Infinity ? 0 : Math.max(0, 1 - minHuntDist / LEV_PROX_MAX_DIST);
+      this.audio.setLeviathanProxVolume(proxVol);
+      // Alert layer: at medium volume when investigating, fade out when patrol/hunt
+      this.audio.setLeviathanAlertVolume(hasAlert && minHuntDist === Infinity ? 0.45 : 0);
     }
   }
 
@@ -4251,6 +4681,16 @@ class EchoesGame {
     } else {
       // Decay phase back to zero so it restarts cleanly next time
       this.o2BezelPhase = 0;
+    }
+
+    // Dashboard flicker: any hunting/attacking leviathan jitters gauge needles
+    const hasHuntingLev   = this.enemies.some(e => e.type === "leviathan" && e.state === "hunt");
+    const hasAttackingLev = this.enemies.some(e => e.type === "leviathan" && e.state === "attacking");
+    if (hasHuntingLev || hasAttackingLev) {
+      const flickerAmt = hasAttackingLev ? 5.2 : 2.0;
+      for (const k of Object.keys(this.gaugeVelocity) as Array<keyof typeof this.gaugeVelocity>) {
+        this.gaugeVelocity[k] += (Math.random() - 0.5) * flickerAmt;
+      }
     }
 
     // Spring physics for all gauge needles (underdamped = overshoot + bounce)
@@ -5467,6 +5907,19 @@ class EchoesGame {
       const pulse = 0.15 + Math.sin(Date.now() / 320) * 0.12;
       ctx.fillStyle = `rgba(255,0,0,${pulse})`;
       ctx.fillRect(0, 0, GAME_W, panelY);
+    }
+
+    // Dashboard brightness dip: dim the control panel area when Leviathan is Hunt/Attack;
+    // milder flicker when Alert (creature investigating)
+    const levHunting = this.enemies.some(e => e.type === "leviathan" && (e.state === "hunt" || e.state === "attacking"));
+    const levAlert   = !levHunting && this.enemies.some(e => e.type === "leviathan" && e.state === "alert");
+    if (levHunting || levAlert) {
+      const panelTop = Math.floor(GAME_H * 0.80);
+      const alpha = levHunting
+        ? 0.10 + Math.abs(Math.sin(Date.now() / 80)) * 0.09
+        : 0.035 + Math.abs(Math.sin(Date.now() / 420)) * 0.025;
+      ctx.fillStyle = `rgba(0,0,0,${alpha})`;
+      ctx.fillRect(0, panelTop, GAME_W, GAME_H - panelTop);
     }
   }
 
