@@ -4183,8 +4183,10 @@ class EchoesGame {
           const assignedGateIdx = (this.lvlDef?.gateObstacleIdxs ?? [])[cond.id] ?? -1;
           if (assignedGateIdx >= 0) {
             this.lvlDef!.obstacles[assignedGateIdx] = { x: -9999, y: -9999, w: 1, h: 1 };
-            if (assignedGateIdx < this.obstacleMeshes.length) this.obstacleMeshes[assignedGateIdx].visible = false;
-            if (assignedGateIdx < this.obstacleOverlayMeshes.length) this.obstacleOverlayMeshes[assignedGateIdx].visible = false;
+            if (assignedGateIdx < this.obstacleMeshes.length) {
+              this.obstacleMeshes[assignedGateIdx].visible = false;
+              this.syncObstacleOverlay(assignedGateIdx);
+            }
             this.gateObstacleIdxs = this.gateObstacleIdxs.filter(i => i !== assignedGateIdx);
           }
           const allOn = this.powerConduits.every(c => c.activated);
@@ -4241,8 +4243,10 @@ class EchoesGame {
     // Remove the original monolithic obstacle
     const obs = this.lvlDef.obstacles[ub.obstacleIdx];
     if (obs) this.lvlDef.obstacles[ub.obstacleIdx] = { x: -9999, y: -9999, w: 1, h: 1 };
-    if (ub.obstacleIdx < this.obstacleMeshes.length) this.obstacleMeshes[ub.obstacleIdx].visible = false;
-    if (ub.obstacleIdx < this.obstacleOverlayMeshes.length) this.obstacleOverlayMeshes[ub.obstacleIdx].visible = false;
+    if (ub.obstacleIdx < this.obstacleMeshes.length) {
+      this.obstacleMeshes[ub.obstacleIdx].visible = false;
+      this.syncObstacleOverlay(ub.obstacleIdx);
+    }
     // Spawn 4–6 debris slabs as persistent new collision rectangles
     const debrisCount = 4 + Math.floor(Math.random() * 3);
     const baseW = obs ? obs.w : 80;
@@ -4437,14 +4441,34 @@ class EchoesGame {
     }
   }
 
+  /**
+   * Sync an overlay twin's position, rotation, scale, and visibility to its source obstacle mesh.
+   * Call this whenever any obstacle mesh is repositioned, rescaled, or hidden so the sonar
+   * grid stays aligned with the visible geometry.  Works for any index in the parallel
+   * obstacleMeshes / obstacleOverlayMeshes arrays, including dynamically appended debris.
+   */
+  private syncObstacleOverlay(idx: number): void {
+    const src = this.obstacleMeshes[idx];
+    const ov  = this.obstacleOverlayMeshes[idx];
+    if (!src || !ov) return;
+    ov.position.copy(src.position);
+    ov.rotation.copy(src.rotation);
+    ov.scale.copy(src.scale);
+    ov.visible = src.visible;
+  }
+
   private updateBulkhead(dt: number) {
     // Animate door-shrink after open is triggered (scale Y 1 → 0 over 800ms, then hide)
     if (this.bulkheadAnimTimer > 0 && this.bulkheadMesh) {
       this.bulkheadAnimTimer = Math.max(0, this.bulkheadAnimTimer - dt);
       const progress = 1 - this.bulkheadAnimTimer / 800;  // 0→1
-      this.bulkheadMesh.scale.set(1, Math.max(0.001, 1 - progress), 1);
+      const scaleY = Math.max(0.001, 1 - progress);
+      this.bulkheadMesh.scale.set(1, scaleY, 1);
+      // Keep overlay twin in sync so the sonar grid matches the shrinking door
+      this.syncObstacleOverlay(this.bulkheadObstacleIdx);
       if (this.bulkheadAnimTimer <= 0) {
         this.bulkheadMesh.visible = false;
+        this.syncObstacleOverlay(this.bulkheadObstacleIdx);
         this.showSub("[ AFT BULKHEAD OPEN — PATH CLEAR ]", 2200);
       }
     }
@@ -4464,7 +4488,7 @@ class EchoesGame {
       if (this.bulkheadStalkerClearTimer >= 2000) {
         this.bulkheadOpen = true;
         this.lvlDef.obstacles[this.bulkheadObstacleIdx] = { x: -9999, y: -9999, w: 1, h: 1 };
-        if (this.bulkheadObstacleIdx < this.obstacleOverlayMeshes.length) this.obstacleOverlayMeshes[this.bulkheadObstacleIdx].visible = false;
+        // Overlay visibility is handled by the scale-sync animation in updateBulkhead — do not hide early
         // Kick off the door-shrink animation (0.8s scale-Y collapse)
         this.bulkheadAnimTimer = 800;
         this.showSub("[ AFT BULKHEAD DISENGAGING ]", 2800);
