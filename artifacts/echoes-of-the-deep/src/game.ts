@@ -388,6 +388,7 @@ interface LetterEntity {
   x: number; y: number;       // 2D world-space position
   collected: boolean;
   flashTimer: number;          // ms remaining for collection flash (0 = gone)
+  revealAlpha: number;         // 0..1 — proximity-driven fade-in; 0 = invisible
 }
 
 type GameState = "MENU" | "PLAYING" | "CUTSCENE" | "DISCOVERY" | "COLLAPSE" | "GAME_OVER" | "LEVEL_TRANSITION";
@@ -3309,6 +3310,8 @@ class EchoesGame {
   private readonly NAME_STRIP_FADE = 1000;   // ms fade-out duration
   private readonly LETTER_COLLECT_R = 70;    // px world units
   private readonly LETTER_FLASH_DUR = 1000;  // ms
+  private readonly LETTER_REVEAL_FAR  = 380; // world units — start fading in
+  private readonly LETTER_REVEAL_NEAR = 120; // world units — fully visible
 
   // Level transition
   private transitionTargetLvl = 0;
@@ -3628,6 +3631,7 @@ class EchoesGame {
         y: start.y + (pod.y - start.y) * t,
         collected: false,
         flashTimer: 0,
+        revealAlpha: 0,
       };
     });
   }
@@ -4750,10 +4754,23 @@ class EchoesGame {
     if (this.letterEntities.length === 0) return;
 
     // Tick down flash timers on already-collected letters
+    // Also drive proximity-based reveal alpha for every uncollected letter
+    const dtSec = dt / 1000;
     for (const letter of this.letterEntities) {
-      if (letter.collected && letter.flashTimer > 0) {
-        letter.flashTimer = Math.max(0, letter.flashTimer - dt);
+      if (letter.collected) {
+        if (letter.flashTimer > 0) letter.flashTimer = Math.max(0, letter.flashTimer - dt);
+        letter.revealAlpha = 1; // collected letters are always "revealed"
+        continue;
       }
+      // Compute how visible this letter should be based on distance to player
+      const dist = Math.hypot(letter.x - this.px, letter.y - this.py);
+      const far  = this.LETTER_REVEAL_FAR;
+      const near = this.LETTER_REVEAL_NEAR;
+      const targetAlpha = dist >= far ? 0 : dist <= near ? 1 : 1 - (dist - near) / (far - near);
+      // Smoothly lerp toward target — fast approach, slow retreat
+      const speed = targetAlpha > letter.revealAlpha ? 1.8 : 0.8;
+      letter.revealAlpha += (targetAlpha - letter.revealAlpha) * Math.min(1, speed * dtSec);
+      if (letter.revealAlpha < 0.005) letter.revealAlpha = 0;
     }
 
     // Find the next uncollected letter (strict-order collection)
@@ -7089,6 +7106,21 @@ class EchoesGame {
       ctx.shadowBlur = 0;
     }
 
+    // ── Letter collectible dots (gold, shown once proximally revealed) ──
+    for (const letter of this.letterEntities) {
+      if (letter.collected || letter.revealAlpha < 0.05) continue;
+      const dotX = wx(letter.x);
+      const dotY = wy(letter.y);
+      const a = letter.revealAlpha * 0.85;
+      ctx.fillStyle   = `rgba(255,210,50,${a.toFixed(3)})`;
+      ctx.shadowColor = `rgba(255,200,0,${(a * 0.6).toFixed(3)})`;
+      ctx.shadowBlur  = 4;
+      ctx.beginPath();
+      ctx.arc(dotX, dotY, 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+
     // ── Player dot ──
     ctx.fillStyle   = "rgba(0,255,180,0.95)";
     ctx.shadowColor = "rgba(0,255,180,0.7)";
@@ -7239,21 +7271,24 @@ class EchoesGame {
       const sy = (-ndcPos.y * 0.5 + 0.5) * GAME_H;
       if (sx < -60 || sx > GAME_W + 60 || sy < 0 || sy > panelY) continue;
 
-      // Flash animation: letter grows brighter then disappears
-      let alpha = 1;
+      // Skip letters that haven't been revealed yet by proximity
+      if (letter.revealAlpha <= 0) continue;
+
+      // Flash animation: letter briefly brightens then fades out
+      let alpha = letter.revealAlpha;
       let scale = 1;
       if (letter.collected && letter.flashTimer > 0) {
         const t = letter.flashTimer / this.LETTER_FLASH_DUR; // 1→0
         alpha = t < 0.2 ? t / 0.2 : 1;  // quick fade-out at end
-        scale = 1 + (1 - t) * 1.2;       // grows while flashing
+        scale = 1 + (1 - t) * 0.15;     // subtle size change, no ballooning
       }
 
       const fontSize = Math.round(28 * scale);
 
-      // Soft gold radial glow halo
-      const glowR = 26 * scale;
+      // Faint gold radial glow halo — barely perceptible in the deep
+      const glowR = 18 * scale;
       const grd = ctx.createRadialGradient(sx, sy, 0, sx, sy, glowR);
-      grd.addColorStop(0, `rgba(255,215,60,${0.35 * alpha})`);
+      grd.addColorStop(0, `rgba(255,215,60,${0.10 * alpha})`);
       grd.addColorStop(1, `rgba(255,180,0,0)`);
       ctx.fillStyle = grd;
       ctx.beginPath();
@@ -7267,7 +7302,7 @@ class EchoesGame {
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
       ctx.shadowColor = "#FFD700";
-      ctx.shadowBlur = letter.collected ? 22 : 10;
+      ctx.shadowBlur = letter.collected ? 6 : 3;
       ctx.fillStyle = letter.collected ? "#FFFFFF" : "#FFD700";
       ctx.fillText(letter.char, sx, sy);
       ctx.shadowBlur = 0;
