@@ -1,0 +1,94 @@
+Build a full web game store page for a game called "Echoes of the Deep" 
+that lives inside the main menu of the game.
+
+STORE OVERVIEW:
+- The store is accessible from the main menu as a "STORE" button
+- The store uses in-game currency called "Echoes" (symbol: ◈)
+- Players can buy Echoes with real money using Stripe
+- The store has a dark underwater wireframe aesthetic — dark navy/black 
+  background, glowing cyan/teal wireframe lines, analog-style UI elements
+
+---
+
+CURRENCY SYSTEM — ECHOES:
+- In-game currency is called Echoes (◈)
+- Real money purchase packs:
+    Starter Pack   → $0.99  = 100 ◈
+    Diver Pack     → $2.99  = 350 ◈
+    Deep Pack      → $4.99  = 600 ◈
+    Abyss Pack     → $9.99  = 1400 ◈
+- Echo balance is stored per user and displayed in the top corner of 
+  the store and main menu at all times
+- Use Stripe Checkout for real money purchases
+- After successful payment, add the correct Echo amount to the user's 
+  balance in the database
+
+---
+
+STORE ITEMS — TWO CATEGORIES:
+
+CATEGORY 1 — FLARES:
+- Flares start at exactly 3 at the beginning of every game. This is fixed.
+- Flares cannot regenerate or refill during gameplay by any other means
+- Players can purchase Flare Packs in the store:
+    +1 Flare Pack   → 80 ◈
+    +3 Flare Pack   → 200 ◈
+    +5 Flare Pack   → 300 ◈
+- Purchased flares are added on top of the base 3
+- Example: if player owns +3 flares from store, they start each game 
+  with 6 flares total
+- Display current owned bonus flares clearly in the store UI
+- Flare purchases stack — buying multiple packs adds up
+
+CATEGORY 2 — SONAR UPGRADE (RECOVERY SPEED):
+- Sonar has a cooldown/recovery time between pings
+- Default recovery time: 8 seconds between pings
+- Each time the player buys a Sonar Upgrade it permanently reduces 
+  the recovery time:
+    Sonar Upgrade Level 1  → 200 ◈  → recovery: 6.5 seconds
+    Sonar Upgrade Level 2  → 350 ◈  → recovery: 5 seconds
+    Sonar Upgrade Level 3  → 500 ◈  → recovery: 3.5 seconds
+    Sonar Upgrade Level 4  → 700 ◈  → recovery: 2 seconds  (MAX)
+- Upgrades must be purchased in order — cannot skip levels
+- Each upgrade builds on the last — it gets faster every time
+- Display the current sonar level and current recovery speed clearly
+- Show a progress bar or level indicator (e.g. Level 2 / 4)
+- Once MAX level is reached, show "FULLY UPGRADED" and lock the button
+
+---
+
+STORE UI REQUIREMENTS:
+- Dark underwater wireframe aesthetic matching the game
+- Analog gauge style where possible (for sonar level display)
+- Two clear sections: "FLARES" and "SONAR UPGRADES"
+- Each item shows: name, description, cost in ◈, and a buy button
+- Echo balance always visible top-right of store
+- If player cannot afford an item, the buy button is greyed out 
+  and says "INSUFFICIENT ECHOES"
+- Confirmation dialog before any purchase: 
+  "Confirm purchase: [item name] for [cost] ◈ ?"
+- Success animation on purchase (brief glow or flash effect)
+- A "BUY ECHOES" button that opens the real money purchase panel
+
+---
+
+BACKEND REQUIREMENTS:
+- User accounts with login/signup
+- Store each user's data in a database:
+    - Echo balance
+    - Bonus flare count
+    - Sonar upgrade level (0 to 4)
+- All purchases update the database immediately
+- Game reads flare count and sonar level from user profile on game start
+- Use Stripe for real money transactions (test mode is fine)
+- Protect all purchase endpoints — validate on server side, 
+  never trust client
+
+---
+
+MAIN MENU INTEGRATION:
+- Main menu has these buttons: PLAY, STORE, SETTINGS, QUIT
+- STORE button opens the store page (same page, no navigation)
+- Echo balance (◈ amount) shown in top right corner of main menu too
+- Store slides in as an overlay panel on top of the main menu
+- Closing the store returns to main menu with updated balance shown
