@@ -214,6 +214,7 @@ const SONAR_FRAG = /* glsl */`
   uniform float uPingRadius[MAX_PINGS];
   uniform float uPingOpacity[MAX_PINGS];
   uniform vec3  uPingColor[MAX_PINGS];
+  uniform vec3  uObjectColor;
   varying vec3  vWorldPos;
 
   // Full-spectrum hue → RGB (smooth HSV-style rainbow)
@@ -237,15 +238,15 @@ const SONAR_FRAG = /* glsl */`
       float dist = sqrt(dx * dx + dz * dz);
       float radius = uPingRadius[i];
 
-      // ── Ring front: blazing leading edge ──
+      // ── Ring front: leading edge ──
       float ringDist = abs(dist - radius);
-      float ringGlow = max(0.0, 1.0 - ringDist / 0.55) * op * 6.0;
-      ringGlow = pow(ringGlow, 0.45);
+      float ringGlow = max(0.0, 1.0 - ringDist / 0.55) * op * 3.0;
+      ringGlow = pow(ringGlow, 0.65);
 
       // ── Grid painted onto entire swept zone ──
       float gridGlow = 0.0;
       if (dist < radius) {
-        float gridSz = 0.48;          // finer grid for more detail
+        float gridSz = 0.48;
         float lw     = 0.13;
         float gx = abs(fract(vWorldPos.x / gridSz + 0.5) - 0.5) * 2.0;
         float gz = abs(fract(vWorldPos.z / gridSz + 0.5) - 0.5) * 2.0;
@@ -256,29 +257,41 @@ const SONAR_FRAG = /* glsl */`
         float cross = min(
           smoothstep(1.0 - lw * 2.4, 1.0, gx) *
           smoothstep(1.0 - lw * 2.4, 1.0, gz) * 2.0, 1.0);
-        gridGlow = (lines + cross * 0.7) * op * 3.2;
+        gridGlow = (lines + cross * 0.7) * op * 1.5;
       }
 
       float glow = max(ringGlow, gridGlow);
       if (glow < 0.003) continue;
-      alpha = max(alpha, glow);
+      alpha = max(alpha, min(glow, 0.80));
 
       // ── Spectral / rainbow colour — world-position-based ──
-      // Each surface fragment gets a vivid hue from its XZ position,
-      // giving different objects different colours as the reference image shows.
       float spectralT = fract(vWorldPos.x * 0.12 + vWorldPos.z * 0.08 + float(i) * 0.31);
-      vec3  specColor = hueRGB(spectralT) * 2.4;   // full-saturation rainbow, extra bright
+      vec3  specColor = hueRGB(spectralT) * 1.1;   // subdued rainbow
 
-      // Ring front: mostly rainbow; grid behind: blend ping base + rainbow
-      float ringFrac  = ringGlow / (glow + 0.001);
-      vec3  gridColor = uPingColor[i] * 2.0;        // base sonar color (cyan/orange/etc)
-      col += mix(gridColor, specColor, 0.30 + ringFrac * 0.55) * glow;
+      // Ring front: mostly rainbow + ping-type base
+      // Grid behind ring: object material color
+      float ringFrac   = ringGlow / (glow + 0.001);
+      vec3  fillColor  = mix(uObjectColor * 1.3, uPingColor[i] * 1.2, ringFrac);
+      col += mix(fillColor, specColor, 0.20 + ringFrac * 0.55) * glow;
     }
 
     if (alpha < 0.004) discard;
-    gl_FragColor = vec4(min(col, vec3(5.0)), min(alpha, 1.0));
+    gl_FragColor = vec4(min(col, vec3(2.0)), min(alpha, 1.0));
   }
 `;
+
+// Sonar grid fill colour palette — maps object category to RGB triple for uObjectColor.
+// Defined at module level so scene-build and dynamic spawn sites share the same source.
+const SONAR_OBJECT_PALETTE: Record<string, readonly [number, number, number]> = {
+  shipwreck:  [0.72, 0.28, 0.08],  // rust-brown / corroded metal
+  rock:       [0.30, 0.42, 0.55],  // slate blue-gray
+  debris:     [0.62, 0.38, 0.12],  // corroded orange
+  wall:       [0.28, 0.33, 0.40],  // stone gray
+  floor:      [0.04, 0.38, 0.42],  // dark teal
+  stalactite: [0.40, 0.18, 0.60],  // deep purple
+  platform:   [0.45, 0.50, 0.58],  // steel gray
+  default:    [0.04, 0.92, 1.00],  // sonar cyan
+};
 
 // Colours (still used in HUD canvas)
 const C_ENV = "#00FFFF";
@@ -3203,6 +3216,14 @@ class EchoesGame {
   private hullIntegrity = 100;
   private hullInDanger = false;  // tracks when hull is in the red zone to fire the sting once
   private sonarOverlayMat: THREE.ShaderMaterial | null = null;
+  // Shared ping uniform containers — referenced by the base mat AND every clone so
+  // updateSonarShader() writes them once and all overlay meshes see the update.
+  private sonarPingUniforms: {
+    uPingOrigin:  { value: THREE.Vector3[] };
+    uPingRadius:  { value: number[] };
+    uPingOpacity: { value: number[] };
+    uPingColor:   { value: THREE.Vector3[] };
+  } | null = null;
   private sonarCharge = 100;
   private gaugeDisplay = { o2: 100, depth: 20, sonarCharge: 100, hull: 100, flares: 3 };
   private sonarSwitchAnim = 0;   // ms countdown for toggle snap animation
@@ -3643,6 +3664,14 @@ class EchoesGame {
     if (this.sonarOverlayMat) { this.sonarOverlayMat.dispose(); this.sonarOverlayMat = null; }
 
     // ── Shared sonar overlay material — created early so ALL terrain gets it ──
+    // Ping uniforms are stored as shared containers so every cloned material
+    // automatically sees per-frame updates from updateSonarShader().
+    this.sonarPingUniforms = {
+      uPingOrigin:  { value: Array.from({ length: 5 }, () => new THREE.Vector3()) },
+      uPingRadius:  { value: [0, 0, 0, 0, 0] },
+      uPingOpacity: { value: [0, 0, 0, 0, 0] },
+      uPingColor:   { value: Array.from({ length: 5 }, () => new THREE.Vector3(0.04, 0.92, 1.0)) },
+    };
     this.sonarOverlayMat = new THREE.ShaderMaterial({
       vertexShader:   SONAR_VERT,
       fragmentShader: SONAR_FRAG,
@@ -3651,18 +3680,31 @@ class EchoesGame {
       blending:       THREE.AdditiveBlending,
       side:           THREE.DoubleSide,
       uniforms: {
-        uPingOrigin:  { value: Array.from({ length: 5 }, () => new THREE.Vector3()) },
-        uPingRadius:  { value: [0, 0, 0, 0, 0] },
-        uPingOpacity: { value: [0, 0, 0, 0, 0] },
-        // Per-ping sonar colour: small=cyan, large=bright-blue, flare=orange, boost=gray
-        uPingColor: { value: Array.from({ length: 5 }, () => new THREE.Vector3(0.04, 0.92, 1.0)) },
+        ...this.sonarPingUniforms,
+        // Per-mesh material identity colour (baked at construction time, not per-frame)
+        uObjectColor: { value: new THREE.Vector3(0.04, 0.92, 1.0) },
       },
     });
     const omat = this.sonarOverlayMat;
 
-    // Helper: add an overlay twin for any Mesh (same geometry, sonar shader)
-    const addOverlay = (m: THREE.Mesh) => {
-      const ov = new THREE.Mesh(m.geometry, omat);
+    // Helper: clone the base sonar material with a per-category uObjectColor and
+    // relink all ping uniforms to the shared containers so updateSonarShader()
+    // writes them once and every clone sees the result automatically.
+    const makeSonarMat = (category: string): THREE.ShaderMaterial => {
+      const mat = omat!.clone();
+      const pu = this.sonarPingUniforms!;
+      mat.uniforms.uPingOrigin  = pu.uPingOrigin;
+      mat.uniforms.uPingRadius  = pu.uPingRadius;
+      mat.uniforms.uPingOpacity = pu.uPingOpacity;
+      mat.uniforms.uPingColor   = pu.uPingColor;
+      const rgb = SONAR_OBJECT_PALETTE[category] ?? SONAR_OBJECT_PALETTE["default"];
+      mat.uniforms.uObjectColor = { value: new THREE.Vector3(rgb[0], rgb[1], rgb[2]) };
+      return mat;
+    };
+
+    // Helper: add an overlay twin for any Mesh with a per-category material clone
+    const addOverlay = (m: THREE.Mesh, category = "default") => {
+      const ov = new THREE.Mesh(m.geometry, makeSonarMat(category));
       ov.position.copy(m.position);
       ov.rotation.copy(m.rotation);
       ov.scale.copy(m.scale);
@@ -3682,7 +3724,7 @@ class EchoesGame {
       this.sceneGroup.add(obsMesh);
       this.obstacleMeshes.push(obsMesh);
       // Build overlay twin manually (not via addOverlay) so we retain a reference per obstacle index
-      const ov = new THREE.Mesh(obsMesh.geometry, omat!);
+      const ov = new THREE.Mesh(obsMesh.geometry, makeSonarMat("wall"));
       ov.position.copy(obsMesh.position); ov.rotation.copy(obsMesh.rotation); ov.scale.copy(obsMesh.scale);
       this.sceneGroup.add(ov);
       this.obstacleOverlayMeshes.push(ov);
@@ -3698,11 +3740,11 @@ class EchoesGame {
         const cellH = Math.min(FLOOR_CELL, def.worldH - row * FLOOR_CELL);
         const floorM = buildFloorMesh(cx, cy, cellW, cellH);
         this.sceneGroup.add(floorM);
-        addOverlay(floorM);
+        addOverlay(floorM, "floor");
         if ((col + row) % 2 === 0) {
           const ceilM = buildCeilMesh(cx, cy, cellW * 2, cellH * 2);
           this.sceneGroup.add(ceilM);
-          addOverlay(ceilM);
+          addOverlay(ceilM, "floor");
         }
       }
     }
@@ -3716,7 +3758,7 @@ class EchoesGame {
       const onFloor = Math.random() > 0.5;
       const stalaM = buildStalactiteMesh(x3d, z3d, onFloor, h);
       this.sceneGroup.add(stalaM);
-      addOverlay(stalaM);
+      addOverlay(stalaM, "stalactite");
     }
 
     // Bioluminescent point lights scattered throughout (always visible — deep ocean)
@@ -3730,7 +3772,7 @@ class EchoesGame {
       this.sceneGroup.add(ship);
       // Register ship geometry with the sonar overlay so it lights up on a ping
       ship.traverse(child => {
-        if (child instanceof THREE.Mesh) addOverlay(child);
+        if (child instanceof THREE.Mesh) addOverlay(child, "shipwreck");
       });
       const bulkLabel = makeBillboard("DATA BULKHEAD", "#FFAA22", 4, 0.9);
       bulkLabel.material.opacity = 0.85;
@@ -3828,11 +3870,16 @@ class EchoesGame {
     // the main corridor are dropped so they never block the player's path.
     // Scatter *meshes* are kept — they decorate the cave walls visually.
     const TUNNEL_Y1 = 720, TUNNEL_Y2 = 1280; // passable corridor band
-    for (const sr of [rocksR, wallsR, debrisR, platformsR]) {
+    for (const [sr, cat] of [
+      [rocksR,     "rock"]     as const,
+      [wallsR,     "wall"]     as const,
+      [debrisR,    "debris"]   as const,
+      [platformsR, "platform"] as const,
+    ]) {
       for (const mesh of sr.meshes) {
         if (mesh instanceof THREE.LineSegments) continue; // shader handles terrain
         this.sceneGroup.add(mesh);
-        addOverlay(mesh as THREE.Mesh);
+        addOverlay(mesh as THREE.Mesh, cat);
       }
       for (const rect of sr.rects) {
         // Drop scatter obstacle rects that would block the main tunnel on Level 1
@@ -3854,7 +3901,7 @@ class EchoesGame {
         light.position.set(0, 0, 0);
         mesh.add(light);
         this.sceneGroup.add(mesh);
-        addOverlay(mesh);
+        addOverlay(mesh, "default");
         this.gasPodMeshes.push({ mesh, light, id: gp.id });
       }
       for (const sb of this.snapBranches) {
@@ -3864,7 +3911,7 @@ class EchoesGame {
         mesh.position.set(sb.x * WS, EYE_H * 0.4, sb.y * WS);
         mesh.rotation.z = (Math.random() - 0.5) * 0.4;
         this.sceneGroup.add(mesh);
-        addOverlay(mesh);
+        addOverlay(mesh, "default");
         this.snapBranchMeshes.push({ mesh, id: sb.id });
       }
       const bloomGroup = new THREE.Group();
@@ -3956,7 +4003,7 @@ class EchoesGame {
         cLabel.position.set(0, 1.6, 0);
         cMesh.add(cLabel);
         this.sceneGroup.add(cMesh);
-        addOverlay(cMesh);
+        addOverlay(cMesh, "wall");
         this.conduitMeshObjs.push({ mesh: cMesh, mat: cMat, light: cLight, id: cond.id });
       }
       for (const gIdx of this.gateObstacleIdxs) {
@@ -4216,8 +4263,16 @@ class EchoesGame {
       this.sceneGroup.add(mesh);   // sceneGroup is cleared on level load — no leak
       this.obstacleMeshes.push(mesh);
       // Sonar overlay twin for debris so pings illuminate new rubble correctly
-      if (this.sonarOverlayMat) {
-        const ov = new THREE.Mesh(geo, this.sonarOverlayMat);
+      if (this.sonarOverlayMat && this.sonarPingUniforms) {
+        const debrisMat = this.sonarOverlayMat.clone();
+        const pu = this.sonarPingUniforms;
+        debrisMat.uniforms.uPingOrigin  = pu.uPingOrigin;
+        debrisMat.uniforms.uPingRadius  = pu.uPingRadius;
+        debrisMat.uniforms.uPingOpacity = pu.uPingOpacity;
+        debrisMat.uniforms.uPingColor   = pu.uPingColor;
+        const debrisRgb = SONAR_OBJECT_PALETTE["debris"] ?? SONAR_OBJECT_PALETTE["default"];
+        debrisMat.uniforms.uObjectColor = { value: new THREE.Vector3(debrisRgb[0], debrisRgb[1], debrisRgb[2]) };
+        const ov = new THREE.Mesh(geo, debrisMat);
         ov.position.copy(mesh.position); ov.rotation.copy(mesh.rotation); ov.scale.copy(mesh.scale);
         this.sceneGroup.add(ov);
         this.obstacleOverlayMeshes.push(ov);
