@@ -1169,11 +1169,18 @@ class AudioSys {
     }
   }
 
-  flatline() {
+  // Continuous low-amplitude ~200Hz flatline tone — runs for vitals phase duration
+  flatline(durationMs = 2800) {
     if (!this.ctx || !this.master) return;
-    const osc = this.ctx.createOscillator(), g = this.ctx.createGain();
-    osc.type = "sine"; osc.frequency.value = 440; g.gain.value = 0.26;
-    osc.connect(g); g.connect(this.master); osc.start(); osc.stop(this.ctx.currentTime + 4);
+    const ctx = this.ctx; const now = ctx.currentTime;
+    const osc = ctx.createOscillator(), g = ctx.createGain();
+    osc.type = "sine"; osc.frequency.value = 200;
+    g.gain.setValueAtTime(0, now);
+    g.gain.linearRampToValueAtTime(0.08, now + 0.15);  // quick ramp to low amplitude
+    g.gain.setValueAtTime(0.08, now + durationMs / 1000 - 0.2);
+    g.gain.linearRampToValueAtTime(0, now + durationMs / 1000);
+    osc.connect(g); g.connect(this.master);
+    osc.start(now); osc.stop(now + durationMs / 1000);
   }
 
   // ----- HULL STRESS — procedural metallic groaning & creaking from deep-sea pressure -----
@@ -1538,87 +1545,141 @@ class AudioSys {
     }
   }
 
-  // Mia memory ambient: quiet paper/crayon rustle — direct to destination (master is at 0)
-  miaMemoryAudio() {
-    if (!this.ctx) return;
-    const ctx = this.ctx; const now = ctx.currentTime;
-    const rLen = ctx.sampleRate * 5;
-    const rBuf = ctx.createBuffer(1, rLen, ctx.sampleRate);
-    const rd = rBuf.getChannelData(0);
-    for (let i = 0; i < rd.length; i++) rd[i] = (Math.random() * 2 - 1) * 0.35;
-    const rSrc = ctx.createBufferSource(); rSrc.buffer = rBuf;
-    const rFlt = ctx.createBiquadFilter(); rFlt.type = "highpass"; rFlt.frequency.value = 2800;
-    const rG = ctx.createGain();
-    rG.gain.setValueAtTime(0, now); rG.gain.linearRampToValueAtTime(0.035, now + 0.4);
-    rG.gain.linearRampToValueAtTime(0.018, now + 2.5); rG.gain.linearRampToValueAtTime(0, now + 4.5);
-    rSrc.connect(rFlt); rFlt.connect(rG); rG.connect(ctx.destination); rSrc.start(now);
-  }
-
-  // Ramp master gain to 0 (everything goes silent) then start ventilator — used on collapse
+  // Instant environmental cut — all audio silent immediately, ventilator starts at once
   collapseAudio() {
     if (!this.ctx || !this.master) return;
     const now = this.ctx.currentTime;
+    // Instant cut on master (1 frame ramp to avoid click)
     this.master.gain.cancelScheduledValues(now);
     this.master.gain.setValueAtTime(this.master.gain.value, now);
-    this.master.gain.linearRampToValueAtTime(0, now + 2.8);
-    // Graceful multi-stage lullaby fade (bypasses master, so must be faded here)
-    // Hold → gentle slope → slow exponential tail → silence
+    this.master.gain.linearRampToValueAtTime(0, now + 0.04);
+    // Kill lullaby immediately too (bypasses master)
     if (this.lullabyGain) {
-      const curGain = this.lullabyGain.gain.value;
       this.lullabyGain.gain.cancelScheduledValues(now);
-      this.lullabyGain.gain.setValueAtTime(curGain, now);
-      this.lullabyGain.gain.linearRampToValueAtTime(curGain * 0.80, now + 1.5);
-      this.lullabyGain.gain.linearRampToValueAtTime(curGain * 0.35, now + 4.0);
-      this.lullabyGain.gain.exponentialRampToValueAtTime(0.001, now + 8.5);
+      this.lullabyGain.gain.setValueAtTime(this.lullabyGain.gain.value, now);
+      this.lullabyGain.gain.linearRampToValueAtTime(0, now + 0.04);
     }
-    // Ventilator fires bypassing master (master = 0) — shared engine, routed to destination
-    setTimeout(() => {
-      if (!this.ctx) return;
-      this._startVentilatorEngine(this.ctx.destination);
-    }, 2900);
+    // Ventilator fires immediately as sole sound (bypasses master which is now 0)
+    this._startVentilatorEngine(this.ctx.destination);
   }
 
-  // Sara memory flash: seagull-like tones + water shimmer
+  // Sara memory: kitchen ambience — low hum of appliances + AM-radio buzz texture
   saraMemoryAudio() {
     if (!this.ctx || !this.master) return;
-    const ctx = this.ctx; const now = ctx.currentTime;
-    for (let i = 0; i < 5; i++) {
-      const osc = ctx.createOscillator(); const g = ctx.createGain();
-      osc.type = "sine"; osc.frequency.value = 2100 + i * 380 + Math.random() * 150;
-      g.gain.setValueAtTime(0, now + i * 0.45);
-      g.gain.linearRampToValueAtTime(0.07, now + i * 0.45 + 0.12);
-      g.gain.linearRampToValueAtTime(0.03, now + i * 0.45 + 0.7);
-      g.gain.linearRampToValueAtTime(0, now + i * 0.45 + 1.1);
-      osc.connect(g); g.connect(this.master); osc.start(now + i * 0.45); osc.stop(now + i * 0.45 + 1.1);
-    }
-    const wLen = ctx.sampleRate * 4;
-    const wBuf = ctx.createBuffer(1, wLen, ctx.sampleRate);
-    const wd = wBuf.getChannelData(0);
-    for (let i = 0; i < wd.length; i++) wd[i] = (Math.random() * 2 - 1) * 0.25;
-    const wSrc = ctx.createBufferSource(); wSrc.buffer = wBuf;
-    const wFlt = ctx.createBiquadFilter(); wFlt.type = "bandpass"; wFlt.frequency.value = 700; wFlt.Q.value = 0.4;
-    const wG = ctx.createGain(); wG.gain.setValueAtTime(0, now); wG.gain.linearRampToValueAtTime(0.055, now + 0.5); wG.gain.linearRampToValueAtTime(0, now + 3.8);
-    wSrc.connect(wFlt); wFlt.connect(wG); wG.connect(this.master); wSrc.start(now); wSrc.stop(now + 4);
-  }
-
-  // Noah memory flash: quiet low drone (paper/silence — distant and muffled)
-  noahMemoryAudio() {
-    if (!this.ctx || !this.master) return;
-    const ctx = this.ctx; const now = ctx.currentTime;
-    const osc = ctx.createOscillator(); osc.type = "triangle"; osc.frequency.value = 160;
-    const g = ctx.createGain();
-    g.gain.setValueAtTime(0, now); g.gain.linearRampToValueAtTime(0.065, now + 0.9);
-    g.gain.linearRampToValueAtTime(0.04, now + 3); g.gain.linearRampToValueAtTime(0, now + 4.8);
-    osc.connect(g); g.connect(this.master); osc.start(now); osc.stop(now + 4.8);
-    // Soft paper-rustle texture
-    const rLen = ctx.sampleRate * 2;
+    const ctx = this.ctx; const master = this.master; const now = ctx.currentTime;
+    // Appliance hum — 60Hz fundamental + harmonics (refrigerator/kettle character)
+    [60, 120, 180].forEach((freq, i) => {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = "sine"; o.frequency.value = freq;
+      g.gain.setValueAtTime(0, now); g.gain.linearRampToValueAtTime(0.045 / (i + 1), now + 1.2);
+      g.gain.linearRampToValueAtTime(0.04 / (i + 1), now + 5.5); g.gain.linearRampToValueAtTime(0, now + 7);
+      o.connect(g); g.connect(master); o.start(now); o.stop(now + 7);
+    });
+    // AM-radio texture — bandpass noise centered ~1.2kHz (mid-range crackle)
+    const rLen = ctx.sampleRate * 7;
     const rBuf = ctx.createBuffer(1, rLen, ctx.sampleRate);
     const rd = rBuf.getChannelData(0);
-    for (let i = 0; i < rd.length; i++) rd[i] = (Math.random() * 2 - 1) * 0.4;
+    for (let i = 0; i < rd.length; i++) rd[i] = Math.random() * 2 - 1;
     const rSrc = ctx.createBufferSource(); rSrc.buffer = rBuf;
-    const rFlt = ctx.createBiquadFilter(); rFlt.type = "highpass"; rFlt.frequency.value = 3000;
-    const rG = ctx.createGain(); rG.gain.setValueAtTime(0.04, now); rG.gain.linearRampToValueAtTime(0, now + 1.5);
-    rSrc.connect(rFlt); rFlt.connect(rG); rG.connect(this.master); rSrc.start(now);
+    const bp = ctx.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = 1200; bp.Q.value = 1.8;
+    const rG = ctx.createGain();
+    rG.gain.setValueAtTime(0, now); rG.gain.linearRampToValueAtTime(0.028, now + 1.5);
+    rG.gain.linearRampToValueAtTime(0.022, now + 5); rG.gain.linearRampToValueAtTime(0, now + 6.5);
+    rSrc.connect(bp); bp.connect(rG); rG.connect(this.master); rSrc.start(now); rSrc.stop(now + 7);
+    // Occasional soft bubbling/percolating (kettle) — short sine bursts
+    for (let b = 0; b < 6; b++) {
+      const bt = now + 0.8 + b * 0.9 + Math.random() * 0.4;
+      const bo = ctx.createOscillator(), bg = ctx.createGain();
+      bo.type = "sine"; bo.frequency.value = 800 + Math.random() * 200;
+      bg.gain.setValueAtTime(0, bt); bg.gain.linearRampToValueAtTime(0.025, bt + 0.04);
+      bg.gain.linearRampToValueAtTime(0, bt + 0.18);
+      bo.connect(bg); bg.connect(this.master); bo.start(bt); bo.stop(bt + 0.2);
+    }
+  }
+
+  // Noah memory: dock ambience — water lapping + seagull tones + hum, cuts at memoryTime-fadeOut
+  // cutAtMs: ms after audio starts when hum/water should cut (aligns with visual FADE_OUT_START)
+  noahMemoryAudio(cutAtMs = 5800) {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx; const now = ctx.currentTime;
+    const CUT = now + cutAtMs / 1000;
+    // Water lapping — low bandpass noise with slow LFO swell
+    const wLen = ctx.sampleRate * 6;
+    const wBuf = ctx.createBuffer(1, wLen, ctx.sampleRate);
+    const wd = wBuf.getChannelData(0);
+    for (let i = 0; i < wd.length; i++) wd[i] = Math.random() * 2 - 1;
+    const wSrc = ctx.createBufferSource(); wSrc.buffer = wBuf;
+    const wFlt = ctx.createBiquadFilter(); wFlt.type = "bandpass"; wFlt.frequency.value = 320; wFlt.Q.value = 0.5;
+    const wLfo = ctx.createOscillator(); wLfo.type = "sine"; wLfo.frequency.value = 0.35;
+    const wLfoG = ctx.createGain(); wLfoG.gain.value = 60;
+    wLfo.connect(wLfoG); wLfoG.connect(wFlt.frequency);
+    const wG = ctx.createGain();
+    wG.gain.setValueAtTime(0, now); wG.gain.linearRampToValueAtTime(0.06, now + 1.0);
+    wG.gain.setValueAtTime(0.06, CUT - 0.05); wG.gain.linearRampToValueAtTime(0, CUT);
+    wSrc.connect(wFlt); wFlt.connect(wG); wG.connect(this.master);
+    wSrc.start(now); wSrc.stop(CUT + 0.1); wLfo.start(now); wLfo.stop(CUT + 0.1);
+    // Seagull-like calls — short FM chirps at irregular intervals
+    const callTimes = [0.6, 1.8, 2.5, 3.7, 4.3];
+    for (const ct of callTimes) {
+      if (now + ct >= CUT) break;
+      const co = ctx.createOscillator(), cg = ctx.createGain();
+      const mod = ctx.createOscillator(), modG = ctx.createGain();
+      co.type = "sine"; co.frequency.value = 1400 + Math.random() * 300;
+      mod.type = "sine"; mod.frequency.value = 8 + Math.random() * 4;
+      modG.gain.value = 120; mod.connect(modG); modG.connect(co.frequency);
+      cg.gain.setValueAtTime(0, now + ct); cg.gain.linearRampToValueAtTime(0.055, now + ct + 0.08);
+      cg.gain.linearRampToValueAtTime(0, now + ct + 0.38);
+      co.connect(cg); cg.connect(this.master); co.start(now + ct); co.stop(now + ct + 0.4);
+      mod.start(now + ct); mod.stop(now + ct + 0.4);
+    }
+    // Distant low humming — Noah's ambient character tone, cut at 5s
+    const hOsc = ctx.createOscillator(), hG = ctx.createGain();
+    hOsc.type = "triangle"; hOsc.frequency.value = 185;
+    hG.gain.setValueAtTime(0, now); hG.gain.linearRampToValueAtTime(0.04, now + 1.5);
+    hG.gain.setValueAtTime(0.04, CUT - 0.05); hG.gain.linearRampToValueAtTime(0, CUT);
+    hOsc.connect(hG); hG.connect(this.master); hOsc.start(now); hOsc.stop(CUT + 0.1);
+  }
+
+  // Mia memory: crayon scratching during hold → abrupt stop → 1s silence → music-box phrase
+  miaMemoryAudio() {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx; const master = this.master; const now = ctx.currentTime;
+    // ── Crayon scratching bed: filtered noise bursts during memory hold (~6s) ──
+    const SCRATCH_START = now + 1.5;  // starts after fade-in
+    const SCRATCH_END   = now + 7.5;  // abrupt stop before silence
+    const scratchBuf = ctx.createBuffer(1, ctx.sampleRate * 8, ctx.sampleRate);
+    const sd = scratchBuf.getChannelData(0);
+    // Sawtooth-ish noise with periodic amplitude modulation (crayon strokes)
+    for (let i = 0; i < sd.length; i++) {
+      const stroke = Math.abs(Math.sin(i / ctx.sampleRate * 4.2 * Math.PI * 2)); // ~4Hz strokes
+      sd[i] = (Math.random() * 2 - 1) * stroke;
+    }
+    const scrSrc = ctx.createBufferSource(); scrSrc.buffer = scratchBuf;
+    const scrFlt = ctx.createBiquadFilter(); scrFlt.type = "bandpass";
+    scrFlt.frequency.value = 3200; scrFlt.Q.value = 0.9; // papery high-mid texture
+    const scrG = ctx.createGain();
+    scrG.gain.setValueAtTime(0, SCRATCH_START);
+    scrG.gain.linearRampToValueAtTime(0.045, SCRATCH_START + 0.3);
+    scrG.gain.setValueAtTime(0.045, SCRATCH_END - 0.02);
+    scrG.gain.linearRampToValueAtTime(0, SCRATCH_END); // abrupt stop
+    scrSrc.connect(scrFlt); scrFlt.connect(scrG); scrG.connect(master);
+    scrSrc.start(SCRATCH_START); scrSrc.stop(SCRATCH_END + 0.05);
+    // ── Music-box phrase: 3 notes after 1s silence following scratch stop ──
+    const PHRASE_START = SCRATCH_END + 1.0;
+    const notes = [1047, 1175, 988]; // C6, D6, B5
+    notes.forEach((freq, i) => {
+      const t = PHRASE_START + i * 0.55;
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.type = "sine"; o.frequency.value = freq;
+      const o2 = ctx.createOscillator(), g2 = ctx.createGain();
+      o2.type = "sine"; o2.frequency.value = freq * 1.003;
+      g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(0.045, t + 0.02);
+      g.gain.exponentialRampToValueAtTime(0.001, t + 1.1);
+      g2.gain.setValueAtTime(0, t); g2.gain.linearRampToValueAtTime(0.025, t + 0.02);
+      g2.gain.exponentialRampToValueAtTime(0.001, t + 0.9);
+      o.connect(g); g.connect(master); o.start(t); o.stop(t + 1.2);
+      o2.connect(g2); g2.connect(master); o2.start(t); o2.stop(t + 1.0);
+    });
   }
 
   // Letter collection echo — soft underwater sine burst with delay tail
@@ -3284,9 +3345,19 @@ class EchoesGame {
   private memoryFlashAlpha = 0;
   private memoryFlashPhase: "in" | "hold" | "out" = "in";
 
+  // Flashback photo assets — preloaded once, used during memory flash phases
+  private flashbackSaraImg: HTMLImageElement | null = null;
+  private flashbackNoahImg: HTMLImageElement | null = null;
+  private level2ConceptImg: HTMLImageElement | null = null;
+
+  // Discovery subtitle queue — sequential timed lines shown automatically
+  private discoverySubLines: Array<{ text: string; at: number; dur: number }> = [];
+  private discoveryElapsed = 0;
+
   // Collapse ending state
   private collapseTimer = 0;
   private collapseWhite = 0;
+  private collapseBlack = 0;
 
   // Per-level completion tracking (captured at completeLevel())
   private levelTimes: number[] = [0, 0, 0];        // seconds each level took
@@ -3394,7 +3465,8 @@ class EchoesGame {
   private shakeTimer = 0;           // ms remaining for camera shake
   private shakeIntensity = 0;       // peak shake magnitude (Three.js units)
   private shakeDuration = 160;      // ms — total duration of current shake event (for decay calc)
-  private gameOverReason: "oxygen" | "hull" = "oxygen";
+  private gameOverReason: "oxygen" | "hull" | "ending" = "oxygen";
+  private _endingEnteredAt = 0;
 
   // Letter collectibles (Levels 1–3 = task Levels 2–4)
   private letterEntities: LetterEntity[] = [];
@@ -3424,6 +3496,23 @@ class EchoesGame {
     this.resizeCanvases();
     window.addEventListener("resize", () => this.resizeCanvases());
     this.bindInput();
+    this._preloadFlashbackImages();
+  }
+
+  private _preloadFlashbackImages() {
+    const base = (import.meta.env.BASE_URL as string) ?? "/";
+    const sara = new Image();
+    sara.src = `${base}assets/flashback_sara.jpg`;
+    sara.onload = () => { this.flashbackSaraImg = sara; };
+    sara.onerror = () => { /* silent — procedural scene renders as fallback */ };
+    const noah = new Image();
+    noah.src = `${base}assets/flashback_noah.webp`;
+    noah.onload = () => { this.flashbackNoahImg = noah; };
+    noah.onerror = () => { /* silent — procedural scene renders as fallback */ };
+    const lvl2 = new Image();
+    lvl2.src = `${base}assets/level2_concept.jpg`;
+    lvl2.onload = () => { this.level2ConceptImg = lvl2; };
+    lvl2.onerror = () => { /* silent fallback */ };
   }
 
   // ============================================================
@@ -3547,7 +3636,10 @@ class EchoesGame {
       this.ensureAudio();
       if (this.state === "MENU" && (e.code === "Space" || e.code === "Enter")) this.startGame();
       else if (this.state === "CUTSCENE" && (e.code === "Space" || e.code === "Enter")) this.advanceCS();
-      else if (this.state === "GAME_OVER" && e.code === "Space") this.loadLevel(this.lvlIdx);
+      else if (this.state === "GAME_OVER" && e.code === "Space") {
+        if (this.gameOverReason === "ending") { this.state = "MENU"; }
+        else this.loadLevel(this.lvlIdx);
+      }
       if (this.state === "PLAYING") {
         if (e.code === "KeyF") this.dropFlare();
         if (e.code === "KeyE") this.interact();
@@ -3555,6 +3647,12 @@ class EchoesGame {
           this.engineCutActive = !this.engineCutActive;
           this.showSub(this.engineCutActive ? "[ ENGINE CUT — COASTING SILENT ]" : "[ ENGINE ONLINE ]");
         }
+      }
+      if (this.state === "DISCOVERY" && e.code === "KeyE") {
+        // Skip current phase immediately
+        this.discoveryTimer = 0;
+        this.discoverySubLines = [];
+        this.subtitle = ""; this.subTimer = 0;
       }
     });
     window.addEventListener("keyup", (e) => { this.keys[e.code] = false; });
@@ -4481,13 +4579,13 @@ class EchoesGame {
     pod.rescued = true;
     this.transitioning = true;
     this.audio.dock();
-    setTimeout(() => { this.audio.flatline(); }, 800);
+    if (this.audioReady) this.audio.flatline(2800);
     const survivor = pod.id as "sara" | "noah" | "mia";
     // Mia dock audio is handled AFTER eliasReactionMia fires (in updateDiscovery vitals→farewell)
     const farewellMap: Record<string, string> = {
       sara: '"Come home, Eli."',
-      noah: '"Love You Dad."',
-      mia:  '"I Will Miss You Dad."',
+      noah: '"I got you."',
+      mia:  '"Dada find me."',
     };
     this.triggerDiscovery(survivor, farewellMap[survivor] ?? pod.commsLine, () => {
       if (this.pods.every(p => p.rescued)) this.completeLevel();
@@ -4501,9 +4599,33 @@ class EchoesGame {
     this.discoveryPodAfter = after;
     this.discoveryPhase = "vitals";
     this.discoveryTimer = 2800;
+    this.discoveryElapsed = 0;
     this.state = "DISCOVERY";
-    // Cold system log fires immediately regardless of discovery phase
-    this.showSub("SYSTEM: Survivor recovered.", 3500);
+
+    // Build timed subtitle queue for this survivor's full discovery arc
+    // Times are ms from start of DISCOVERY state (vitals phase begins at 0)
+    const vitalsEnd = 2800;
+    const farewellDur = survivor === "mia" ? 5000 : 3000;
+    const farewellStart = vitalsEnd;
+
+    const lines: Array<{ text: string; at: number; dur: number }> = [];
+    if (survivor === "sara") {
+      // Vitals phase
+      lines.push({ text: 'COMMS: "Survivor recovered. Docking arm locked."', at: 200, dur: 3500 });
+      // Farewell phase — Elias reaction then AI sign-off
+      lines.push({ text: 'Elias: *sharp trembling breath — chokes into a gasp*', at: farewellStart + 800, dur: 3500 });
+      lines.push({ text: 'AI: "Survivor recovered."', at: farewellStart + farewellDur - 1200, dur: 2500 });
+    } else if (survivor === "noah") {
+      lines.push({ text: 'COMMS: [CRACKLE] "Dad? Is that you?"', at: 600, dur: 4000 });
+      lines.push({ text: 'Elias: *short broken cry* "No… no no no—"', at: farewellStart + 600, dur: 3500 });
+      lines.push({ text: 'AI: "Survivor recovered."', at: farewellStart + farewellDur - 1200, dur: 2500 });
+    } else {
+      // Mia
+      lines.push({ text: 'COMMS: [lullaby fading from inside the pod…]', at: 800, dur: 3800 });
+      lines.push({ text: 'Elias: *full screaming breakdown — mic overloads — quiet sobbing*', at: farewellStart + 500, dur: 4000 });
+      lines.push({ text: 'AI: "Survivor recovered."', at: farewellStart + farewellDur - 1400, dur: 2500 });
+    }
+    this.discoverySubLines = lines;
   }
 
   private checkPuzzle() {
@@ -4814,6 +4936,7 @@ class EchoesGame {
     this.state = "COLLAPSE";
     this.collapseTimer = 0;
     this.collapseWhite = 0;
+    this.collapseBlack = 0;
 
     // Persist completion record to localStorage
     const LEVELS = [
@@ -5048,15 +5171,26 @@ class EchoesGame {
     const farewellTime = this.discoverySurvivor === "mia" ? 5000 : 3000;
     const memoryTime   = this.discoverySurvivor === "mia" ? 10000 : 8000; // 1s black + 1.5s in + hold + 2s out
 
+    this.discoveryElapsed += dt;
     this.discoveryTimer -= dt;
+    // Decrement subtitle timer (normally handled in PLAYING update branch only)
+    if (this.subTimer > 0) this.subTimer = Math.max(0, this.subTimer - dt);
+
+    // Fire any timed discovery subtitle lines
+    for (let i = this.discoverySubLines.length - 1; i >= 0; i--) {
+      const line = this.discoverySubLines[i];
+      if (this.discoveryElapsed >= line.at) {
+        this.showSub(line.text, line.dur);
+        this.discoverySubLines.splice(i, 1);
+      }
+    }
+
     if (this.discoveryTimer <= 0) {
       if (this.discoveryPhase === "vitals") {
         if (this.audioReady) {
           if (this.discoverySurvivor === "sara") this.audio.eliasReactionSara();
           else if (this.discoverySurvivor === "noah") {
             this.audio.eliasReactionNoah();
-            // Noah comms — teenage voice heard through the pod speaker
-            this.showSub('COMMS: "Dad? Is that you?"', 4000);
           } else {
             // Mia: fire reaction first (routes through master), then mute master after scream
             this.audio.eliasReactionMia();
@@ -5112,9 +5246,26 @@ class EchoesGame {
 
   private updateCollapse(dt: number) {
     this.collapseTimer += dt;
-    const pct = Math.min(1, this.collapseTimer / 8000);
-    this.glitchTimer = 300;
-    this.collapseWhite = pct > 0.65 ? Math.min(1, (pct - 0.65) / 0.35) : 0;
+    const TOTAL = 14000; // 6s fracture + 2s full white + 4s fade to black + 2s hold
+    const pct = Math.min(1, this.collapseTimer / TOTAL);
+    // Keep glitch active during fracture phase
+    if (pct < 0.55) this.glitchTimer = 300;
+    // White builds from 55-72% of TOTAL; then full white 72-86%; then fade to black 86-100%
+    if (pct < 0.55) {
+      this.collapseWhite = 0;
+    } else if (pct < 0.72) {
+      this.collapseWhite = (pct - 0.55) / 0.17;
+    } else {
+      this.collapseWhite = 1;
+    }
+    // collapseBlack: 86%→100% fade to black for end card
+    this.collapseBlack = pct > 0.86 ? Math.min(1, (pct - 0.86) / 0.14) : 0;
+    // Transition to GAME_OVER once sequence fully complete
+    if (pct >= 1) {
+      this.state = "GAME_OVER";
+      this.gameOverReason = "ending";
+      this._endingEnteredAt = Date.now();
+    }
   }
 
   private updateDialogue() {
@@ -7648,6 +7799,8 @@ class EchoesGame {
       // (dialog area is y=180–480; cockpit starts at y=500 — no overlap)
       this.renderControlPanel();
       this.renderPortholeFrame();
+      // Draw timed subtitles fired by the discovery queue
+      if (this.subTimer > 0 && this.subtitle) this.renderSubtitle();
       return;
     }
     if (this.state === "COLLAPSE") {
@@ -8268,73 +8421,167 @@ class EchoesGame {
     }
     ctx.restore();
 
-    // Survivor label (not the real name)
-    ctx.fillStyle = "rgba(150,220,255,0.75)"; ctx.font = "bold 13px monospace"; ctx.textAlign = "center";
-    ctx.fillText(survivorNum.toUpperCase(), GAME_W / 2, CY + 122);
+    // Survivor label — blinks at 1 Hz during vitals phase
+    const survivorVisible = this.discoveryPhase !== "vitals" || Math.sin(t * Math.PI * 2) > 0;
+    if (survivorVisible) {
+      ctx.fillStyle = "rgba(150,220,255,0.82)"; ctx.font = "bold 13px monospace"; ctx.textAlign = "center";
+      ctx.fillText(survivorNum.toUpperCase(), GAME_W / 2, CY + 122);
+    }
 
     if (this.discoveryPhase === "vitals") {
-      // ECG flatline trace — animated waveform line across the panel
-      const traceY = CY + 148;
-      const traceX0 = CX + 28, traceX1 = CX + CW - 28;
-      const traceW = traceX1 - traceX0;
-      // Faint ghost of a former pulse — decaying sine wave fading to flat
-      const decayAge = (2800 - this.discoveryTimer) / 2800; // 0→1 over vitals phase
+      // ── Sara vitals: level-2 concept image as dim background reference ──
+      if (this.discoverySurvivor === "sara" && this.level2ConceptImg) {
+        const img = this.level2ConceptImg;
+        const scale = Math.max(CW / img.width, CH / img.height);
+        const iw = img.width * scale, ih = img.height * scale;
+        ctx.save();
+        ctx.globalAlpha = 0.10;
+        ctx.globalCompositeOperation = "screen";
+        ctx.beginPath(); ctx.rect(CX, CY, CW, CH); ctx.clip();
+        ctx.drawImage(img, CX + (CW - iw) / 2, CY + (CH - ih) / 2, iw, ih);
+        ctx.restore();
+      }
+
+      // ── Mia vitals: glitch lines overlay ──
+      if (this.discoverySurvivor === "mia") {
+        ctx.save(); ctx.globalCompositeOperation = "destination-out";
+        const glitchCount = Math.floor(3 + Math.random() * 5);
+        for (let g = 0; g < glitchCount; g++) {
+          const gy = Math.random() * GAME_H;
+          ctx.fillStyle = `rgba(0,0,0,${0.35 + Math.random() * 0.45})`;
+          ctx.fillRect(Math.random() * GAME_W * 0.3, gy, (0.25 + Math.random() * 0.6) * GAME_W, 1 + Math.random() * 3);
+        }
+        ctx.restore();
+      }
+
+      // ── Bioscan viewport — rectangular scan window with moving scanline ──
+      const scanX = CX + 28, scanY = CY + 135, scanW = CW - 56, scanH = 68;
       ctx.save();
-      ctx.beginPath(); ctx.moveTo(traceX0, traceY);
+      ctx.strokeStyle = "rgba(0,200,200,0.28)"; ctx.lineWidth = 1;
+      ctx.strokeRect(scanX, scanY, scanW, scanH);
+      // Corner ticks
+      const tick = 8;
+      ctx.strokeStyle = "rgba(0,220,220,0.55)"; ctx.lineWidth = 1.5;
+      [[scanX,scanY],[scanX+scanW,scanY],[scanX,scanY+scanH],[scanX+scanW,scanY+scanH]].forEach(([cx2,cy2],i) => {
+        const sx = i % 2 === 0 ? 1 : -1, sy = i < 2 ? 1 : -1;
+        ctx.beginPath(); ctx.moveTo(cx2, cy2); ctx.lineTo(cx2+sx*tick, cy2); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(cx2, cy2); ctx.lineTo(cx2, cy2+sy*tick); ctx.stroke();
+      });
+      // Moving scanline — sweeps top→bottom, loops every 2s
+      const scanPct = (t % 2) / 2;
+      const scanLineY = scanY + scanPct * scanH;
+      const scanGrad = ctx.createLinearGradient(0, scanLineY - 10, 0, scanLineY + 4);
+      scanGrad.addColorStop(0, "rgba(0,255,200,0)");
+      scanGrad.addColorStop(0.7, "rgba(0,255,200,0.18)");
+      scanGrad.addColorStop(1, "rgba(0,255,200,0.06)");
+      ctx.fillStyle = scanGrad; ctx.fillRect(scanX, scanLineY - 10, scanW, 14);
+      ctx.strokeStyle = "rgba(0,255,200,0.45)"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(scanX, scanLineY); ctx.lineTo(scanX + scanW, scanLineY); ctx.stroke();
+      ctx.restore();
+
+      // ── ECG flatline trace inside scan window ──
+      const traceY = scanY + scanH / 2;
+      const traceX0 = scanX + 6, traceX1 = scanX + scanW - 6;
+      const traceW = traceX1 - traceX0;
+      const decayAge = (2800 - this.discoveryTimer) / 2800;
+      ctx.save();
+      ctx.beginPath();
       const steps = 120;
       for (let s = 0; s <= steps; s++) {
         const px2 = traceX0 + (s / steps) * traceW;
-        const nx = s / steps; // normalized 0→1
-        // Ghost pulse: a brief QRS spike very early on, decays quickly
+        const nx = s / steps;
         const ghostEnv = Math.max(0, 1 - decayAge * 4) * Math.max(0, 1 - Math.abs(nx - 0.22) * 12);
-        const ghostAmp = ghostEnv * 22;
-        // Baseline flat: 0 after the ghost fades
-        const flatNoise = (Math.random() - 0.5) * 0.6 * Math.max(0, 1 - decayAge * 5);
-        const py2 = traceY + flatNoise - ghostAmp * Math.sin(nx * Math.PI * 2 * 3) * (nx < 0.3 ? 1 : 0);
+        const py2 = traceY - ghostEnv * 18 * Math.sin(nx * Math.PI * 2 * 3) * (nx < 0.3 ? 1 : 0);
         if (s === 0) ctx.moveTo(px2, py2); else ctx.lineTo(px2, py2);
       }
-      const traceAlpha = 0.22 + Math.max(0, 1 - decayAge * 3) * 0.28;
-      ctx.strokeStyle = `rgba(255,60,60,${traceAlpha})`; ctx.lineWidth = 1.2; ctx.stroke();
+      ctx.strokeStyle = `rgba(255,60,60,${0.22 + Math.max(0, 1 - decayAge * 3) * 0.28})`; ctx.lineWidth = 1.2; ctx.stroke();
       ctx.restore();
-
-      // Solid flat line — the flatline itself, pulses red
+      // Solid flatline — glowing red
       ctx.save();
-      ctx.shadowColor = "#FF0000"; ctx.shadowBlur = 6 + Math.sin(t * 5) * 4;
-      ctx.strokeStyle = `rgba(255,30,30,${0.65 + Math.sin(t * 4) * 0.15})`; ctx.lineWidth = 2;
+      ctx.shadowColor = "#FF0000"; ctx.shadowBlur = 6 + Math.sin(t * 5) * 3;
+      ctx.strokeStyle = `rgba(255,30,30,${0.65 + Math.sin(t * 4) * 0.12})`; ctx.lineWidth = 1.8;
       ctx.beginPath(); ctx.moveTo(traceX0, traceY); ctx.lineTo(traceX1, traceY); ctx.stroke();
       ctx.restore();
 
-      // FLATLINE label
-      ctx.fillStyle = "#FF2222"; ctx.font = "bold 30px monospace";
-      ctx.shadowColor = "#FF0000"; ctx.shadowBlur = 24 + Math.sin(t * 6) * 8;
-      ctx.fillText("FLATLINE", GAME_W / 2, CY + 185);
+      // ── Analog vitals needle gauge — pinned at zero ──
+      const gaugeX = CX + CW - 70, gaugeY = CY + 82, gaugeR = 28;
+      ctx.save();
+      // Gauge face
+      ctx.beginPath(); ctx.arc(gaugeX, gaugeY, gaugeR, 0, Math.PI * 2);
+      ctx.fillStyle = "rgba(0,4,14,0.85)"; ctx.fill();
+      ctx.strokeStyle = "rgba(0,180,180,0.35)"; ctx.lineWidth = 1; ctx.stroke();
+      // Tick marks
+      for (let tk = 0; tk <= 10; tk++) {
+        const angle = Math.PI * 0.8 + (tk / 10) * Math.PI * 1.4;
+        const ir = gaugeR - (tk % 5 === 0 ? 7 : 4);
+        ctx.strokeStyle = tk % 5 === 0 ? "rgba(0,200,200,0.55)" : "rgba(0,150,150,0.3)";
+        ctx.lineWidth = tk % 5 === 0 ? 1.5 : 0.8;
+        ctx.beginPath();
+        ctx.moveTo(gaugeX + Math.cos(angle) * ir, gaugeY + Math.sin(angle) * ir);
+        ctx.lineTo(gaugeX + Math.cos(angle) * (gaugeR - 2), gaugeY + Math.sin(angle) * (gaugeR - 2));
+        ctx.stroke();
+      }
+      // Needle — pinned at zero (leftmost position = no vitals)
+      const needleAngle = Math.PI * 0.8; // zero position
+      ctx.strokeStyle = "#FF3333"; ctx.lineWidth = 1.5;
+      ctx.shadowColor = "#FF0000"; ctx.shadowBlur = 4;
+      ctx.beginPath();
+      ctx.moveTo(gaugeX, gaugeY);
+      ctx.lineTo(gaugeX + Math.cos(needleAngle) * (gaugeR - 5), gaugeY + Math.sin(needleAngle) * (gaugeR - 5));
+      ctx.stroke();
       ctx.shadowBlur = 0;
-      ctx.fillStyle = "rgba(255,80,80,0.55)"; ctx.font = "11px monospace";
-      ctx.fillText("VITAL SIGNS: NONE DETECTED", GAME_W / 2, CY + 207);
-      // Cold system log
-      ctx.fillStyle = "rgba(180,180,180,0.5)"; ctx.font = "italic 12px monospace";
-      ctx.fillText("Survivor recovered.", GAME_W / 2, CY + 240);
+      // Center dot
+      ctx.fillStyle = "rgba(255,60,60,0.8)"; ctx.beginPath(); ctx.arc(gaugeX, gaugeY, 2.5, 0, Math.PI * 2); ctx.fill();
+      // Label
+      ctx.fillStyle = "rgba(0,180,180,0.45)"; ctx.font = "7px monospace"; ctx.textAlign = "center";
+      ctx.fillText("BPM", gaugeX, gaugeY + gaugeR - 3);
+      ctx.restore();
+
+      // FLATLINE label
+      ctx.fillStyle = "#FF2222"; ctx.font = "bold 28px monospace"; ctx.textAlign = "center";
+      ctx.shadowColor = "#FF0000"; ctx.shadowBlur = 22 + Math.sin(t * 6) * 7;
+      ctx.fillText("FLATLINE", GAME_W / 2, CY + 225);
+      ctx.shadowBlur = 0;
+      ctx.fillStyle = "rgba(255,80,80,0.5)"; ctx.font = "10px monospace";
+      ctx.fillText("VITAL SIGNS: NONE DETECTED", GAME_W / 2, CY + 244);
+      ctx.fillStyle = "rgba(180,180,180,0.45)"; ctx.font = "italic 11px monospace";
+      ctx.fillText("Survivor recovered.", GAME_W / 2, CY + 264);
 
     } else if (this.discoveryPhase === "farewell") {
-      // Pod window message (written in dark red)
+      // Pod window message — "blood text" with smear brushstroke quality
       ctx.fillStyle = "rgba(255,255,255,0.18)"; ctx.font = "10px monospace";
       ctx.fillText("LAST RECORDED MESSAGE — POD INTERIOR", GAME_W / 2, CY + 148);
 
       const msgAlpha = Math.min(1, (farewellTime - this.discoveryTimer) / 700);
-      ctx.fillStyle = `rgba(200,40,40,${msgAlpha * 0.88})`; ctx.font = "italic 21px Georgia, serif";
-      ctx.fillText(this.discoveryFarewellMsg ?? "", GAME_W / 2, CY + 194);
+      const msg = this.discoveryFarewellMsg ?? "";
 
-      // Cold log — same phrase, feels like a cruelty
-      const logAlpha = Math.min(1, (farewellTime - this.discoveryTimer) / 1200);
-      ctx.fillStyle = `rgba(160,160,160,${logAlpha * 0.55})`; ctx.font = "italic 11px monospace";
-      ctx.fillText("Survivor recovered.", GAME_W / 2, CY + 240);
-
-      // Noah-specific: comms line shown in farewell panel
-      if (this.discoverySurvivor === "noah") {
-        const noahAlpha = Math.min(1, (farewellTime - this.discoveryTimer) / 400);
-        ctx.fillStyle = `rgba(0,200,255,${noahAlpha * 0.6})`; ctx.font = "italic 12px monospace";
-        ctx.fillText('[COMMS] "Dad? Is that you?"', GAME_W / 2, CY + 264);
+      // Render blood text with multiple offset layers for smear effect
+      ctx.save();
+      ctx.textAlign = "center";
+      if (this.discoverySurvivor === "mia") {
+        // Mia: shaky childlike letters — each character slightly offset
+        ctx.font = "italic bold 22px Georgia, serif";
+        const chars = msg.replace(/^"|"$/g, "");
+        const charW = 13;
+        const startX = GAME_W / 2 - (chars.length * charW) / 2;
+        for (let ci = 0; ci < chars.length; ci++) {
+          const jx = (Math.sin(ci * 3.7 + 1.1) * 2.8) * msgAlpha;
+          const jy = (Math.cos(ci * 2.3 + 0.5) * 3.2) * msgAlpha;
+          // Smear: two offset under-layers
+          ctx.fillStyle = `rgba(140,20,10,${msgAlpha * 0.35})`;
+          ctx.fillText(chars[ci], startX + ci * charW + 2.5 + jx, CY + 194 + 2 + jy);
+          ctx.fillStyle = `rgba(180,30,15,${msgAlpha * 0.78})`;
+          ctx.fillText(chars[ci], startX + ci * charW + jx, CY + 194 + jy);
+        }
+      } else {
+        // Sara / Noah: italic handwritten smear
+        ctx.font = "italic 21px Georgia, serif";
+        // Smear shadow passes
+        ctx.fillStyle = `rgba(130,18,8,${msgAlpha * 0.30})`; ctx.fillText(msg, GAME_W / 2 + 2.5, CY + 194 + 2.5);
+        ctx.fillStyle = `rgba(160,22,10,${msgAlpha * 0.22})`; ctx.fillText(msg, GAME_W / 2 - 1.5, CY + 194 + 1.5);
+        ctx.fillStyle = `rgba(200,35,20,${msgAlpha * 0.90})`; ctx.fillText(msg, GAME_W / 2, CY + 194);
       }
+      ctx.restore();
     }
   }
 
@@ -8365,78 +8612,76 @@ class EchoesGame {
     const ctx = this.hudCtx;
     const cx = GAME_W / 2, cy = GAME_H / 2;
 
-    // Slightly overexposed warm sky — like an old sun-bleached photo
-    const skyGrad = ctx.createLinearGradient(0, 0, 0, GAME_H);
-    skyGrad.addColorStop(0, "rgba(255,248,220,1)");
-    skyGrad.addColorStop(0.45, "rgba(255,220,140,0.95)");
-    skyGrad.addColorStop(1, "rgba(180,130,80,0.8)");
-    ctx.fillStyle = skyGrad; ctx.fillRect(0, 0, GAME_W, GAME_H);
+    if (this.flashbackSaraImg) {
+      // ── Photo path: kitchen flashback photo fills canvas ──
+      const img = this.flashbackSaraImg;
+      // Scale to cover canvas preserving aspect ratio
+      const scale = Math.max(GAME_W / img.width, GAME_H / img.height);
+      const dw = img.width * scale, dh = img.height * scale;
+      const dx = (GAME_W - dw) / 2, dy = (GAME_H - dh) / 2;
+      ctx.drawImage(img, dx, dy, dw, dh);
 
-    // Sun bloom — upper right, harsh, bleached
-    const sunG = ctx.createRadialGradient(GAME_W * 0.78, GAME_H * 0.18, 0, GAME_W * 0.78, GAME_H * 0.18, 200);
-    sunG.addColorStop(0, "rgba(255,255,240,0.92)");
-    sunG.addColorStop(0.3, "rgba(255,230,150,0.55)");
-    sunG.addColorStop(1, "rgba(255,200,80,0)");
-    ctx.fillStyle = sunG; ctx.fillRect(0, 0, GAME_W, GAME_H);
+      // Warm film-grain overlay — faint noise canvas layer
+      ctx.save();
+      ctx.globalAlpha = 0.06 + Math.sin(t * 17.3) * 0.015;
+      for (let gy = 0; gy < GAME_H; gy += 2) {
+        for (let gx = 0; gx < GAME_W; gx += 2) {
+          if (Math.random() > 0.5) {
+            const v = Math.floor(Math.random() * 60);
+            ctx.fillStyle = `rgba(${v + 180},${v + 140},${v + 60},0.55)`;
+            ctx.fillRect(gx, gy, 2, 2);
+          }
+        }
+      }
+      ctx.restore();
 
-    // Sunlight streaks radiating from upper right
-    ctx.save(); ctx.globalAlpha *= 0.22;
-    for (let i = 0; i < 8; i++) {
-      const angle = Math.PI * 0.55 + (i / 8) * (Math.PI * 0.45) + Math.sin(t * 0.3 + i) * 0.02;
-      ctx.strokeStyle = "rgba(255,240,180,0.7)"; ctx.lineWidth = 18 + i * 4;
-      ctx.beginPath(); ctx.moveTo(GAME_W * 0.78, GAME_H * 0.18);
-      ctx.lineTo(GAME_W * 0.78 + Math.cos(angle) * GAME_W, GAME_H * 0.18 + Math.sin(angle) * GAME_H);
-      ctx.stroke();
-    }
-    ctx.restore();
+      // Warm sepia overlay — push color toward kitchen warmth
+      ctx.save(); ctx.globalAlpha = 0.18;
+      ctx.fillStyle = "rgba(220,160,60,1)";
+      ctx.globalCompositeOperation = "multiply";
+      ctx.fillRect(0, 0, GAME_W, GAME_H);
+      ctx.restore();
 
-    // Boat hull — dark wood plank silhouette at bottom center
-    const boatCX = cx + 40, boatY = cy + 80;
-    ctx.fillStyle = "rgba(60,35,15,0.72)";
-    ctx.beginPath(); ctx.ellipse(boatCX, boatY, 170, 28, -0.08, 0, Math.PI * 2); ctx.fill();
+      // Soft vignette — dark edges, bright centre
+      const vig = ctx.createRadialGradient(cx, cy, GAME_H * 0.2, cx, cy, GAME_H * 0.72);
+      vig.addColorStop(0, "rgba(0,0,0,0)");
+      vig.addColorStop(1, "rgba(0,0,0,0.52)");
+      ctx.fillStyle = vig; ctx.fillRect(0, 0, GAME_W, GAME_H);
+    } else {
+      // ── Procedural fallback: warm bleached kitchen-like scene ──
+      const skyGrad = ctx.createLinearGradient(0, 0, 0, GAME_H);
+      skyGrad.addColorStop(0, "rgba(255,248,220,1)");
+      skyGrad.addColorStop(0.45, "rgba(255,220,140,0.95)");
+      skyGrad.addColorStop(1, "rgba(180,130,80,0.8)");
+      ctx.fillStyle = skyGrad; ctx.fillRect(0, 0, GAME_W, GAME_H);
 
-    // Water glimmer at very bottom
-    const waterGrad = ctx.createLinearGradient(0, GAME_H * 0.72, 0, GAME_H);
-    waterGrad.addColorStop(0, "rgba(100,160,200,0)");
-    waterGrad.addColorStop(1, "rgba(40,100,160,0.55)");
-    ctx.fillStyle = waterGrad; ctx.fillRect(0, GAME_H * 0.72, GAME_W, GAME_H * 0.28);
+      const sunG = ctx.createRadialGradient(GAME_W * 0.78, GAME_H * 0.18, 0, GAME_W * 0.78, GAME_H * 0.18, 200);
+      sunG.addColorStop(0, "rgba(255,255,240,0.92)"); sunG.addColorStop(0.3, "rgba(255,230,150,0.55)");
+      sunG.addColorStop(1, "rgba(255,200,80,0)");
+      ctx.fillStyle = sunG; ctx.fillRect(0, 0, GAME_W, GAME_H);
 
-    // Woman figure — fully blurred silhouette, seated in boat
-    const figX = cx - 30, figY = cy + 12;
-    // Body
-    const figGrad = ctx.createRadialGradient(figX, figY, 0, figX, figY + 20, 55);
-    figGrad.addColorStop(0, "rgba(80,55,35,0.45)");
-    figGrad.addColorStop(1, "rgba(80,55,35,0)");
-    ctx.fillStyle = figGrad; ctx.fillRect(figX - 35, figY - 45, 70, 80);
-    // Heavy motion blur across the face — completely unreadable
-    ctx.save(); ctx.globalAlpha *= 0.38;
-    for (let i = -5; i <= 5; i++) {
-      ctx.fillStyle = "rgba(220,180,140,0.4)";
-      ctx.fillRect(figX - 28, figY - 58 + i * 5, 56, 4);
-    }
-    ctx.restore();
+      // Blurred woman silhouette
+      const figX = cx - 30, figY = cy + 12;
+      const figGrad = ctx.createRadialGradient(figX, figY, 0, figX, figY + 20, 55);
+      figGrad.addColorStop(0, "rgba(80,55,35,0.45)"); figGrad.addColorStop(1, "rgba(80,55,35,0)");
+      ctx.fillStyle = figGrad; ctx.fillRect(figX - 35, figY - 45, 70, 80);
+      ctx.save(); ctx.globalAlpha *= 0.38;
+      for (let i = -5; i <= 5; i++) {
+        ctx.fillStyle = "rgba(220,180,140,0.4)"; ctx.fillRect(figX - 28, figY - 58 + i * 5, 56, 4);
+      }
+      ctx.restore();
 
-    // Reaching hand — from lower-right corner toward the figure
-    const handFromX = GAME_W * 0.82, handFromY = GAME_H * 0.78;
-    const handToX = figX + 32, handToY = figY + 15;
-    ctx.strokeStyle = "rgba(180,140,100,0.48)"; ctx.lineWidth = 12;
-    ctx.lineCap = "round";
-    ctx.beginPath(); ctx.moveTo(handFromX, handFromY); ctx.lineTo(handToX, handToY); ctx.stroke();
-    // Finger suggestions
-    for (let f = 0; f < 4; f++) {
-      const angle = -0.4 + f * 0.18;
-      ctx.lineWidth = 6;
-      ctx.beginPath();
-      ctx.moveTo(handToX, handToY);
-      ctx.lineTo(handToX + Math.cos(angle) * 22, handToY + Math.sin(angle) * 22);
-      ctx.stroke();
+      // Vignette
+      const vig = ctx.createRadialGradient(cx, cy, GAME_H * 0.25, cx, cy, GAME_H * 0.75);
+      vig.addColorStop(0, "rgba(0,0,0,0)"); vig.addColorStop(1, "rgba(0,0,0,0.4)");
+      ctx.fillStyle = vig; ctx.fillRect(0, 0, GAME_W, GAME_H);
     }
 
-    // Laughing posture — slight lean + arms-up suggestion (very blurred)
-    ctx.save(); ctx.globalAlpha *= 0.25;
-    ctx.strokeStyle = "rgba(80,55,35,0.5)"; ctx.lineWidth = 8;
-    ctx.beginPath(); ctx.moveTo(figX - 5, figY - 10); ctx.lineTo(figX - 40, figY - 45); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(figX + 5, figY - 10); ctx.lineTo(figX + 35, figY - 50); ctx.stroke();
+    // Film border scratch — always visible
+    ctx.save(); ctx.globalAlpha = 0.06 + Math.abs(Math.sin(t * 23)) * 0.04;
+    ctx.strokeStyle = "rgba(255,240,200,0.7)"; ctx.lineWidth = 1;
+    const scratchX = cx + 80 + Math.sin(t * 31) * 60;
+    ctx.beginPath(); ctx.moveTo(scratchX, 0); ctx.lineTo(scratchX + Math.sin(t) * 5, GAME_H); ctx.stroke();
     ctx.restore();
   }
 
@@ -8444,73 +8689,67 @@ class EchoesGame {
     const ctx = this.hudCtx;
     const cx = GAME_W / 2, cy = GAME_H / 2;
 
-    // Paper background — warm off-white, slightly yellowed
-    const paper = ctx.createLinearGradient(0, 0, GAME_W, GAME_H);
-    paper.addColorStop(0, "rgba(255,252,235,1)");
-    paper.addColorStop(1, "rgba(245,238,210,1)");
-    ctx.fillStyle = paper; ctx.fillRect(0, 0, GAME_W, GAME_H);
+    if (this.flashbackNoahImg) {
+      // ── Photo path: sunset dock photo fills canvas ──
+      const img = this.flashbackNoahImg;
+      const scale = Math.max(GAME_W / img.width, GAME_H / img.height);
+      const dw = img.width * scale, dh = img.height * scale;
+      const dx = (GAME_W - dw) / 2, dy = (GAME_H - dh) / 2;
+      ctx.drawImage(img, dx, dy, dw, dh);
 
-    // Paper texture — faint ruled lines
-    ctx.strokeStyle = "rgba(180,170,140,0.22)"; ctx.lineWidth = 1;
-    for (let ly = 60; ly < GAME_H; ly += 28) {
-      ctx.beginPath(); ctx.moveTo(0, ly); ctx.lineTo(GAME_W, ly); ctx.stroke();
-    }
+      // Warm orange/gold color grade — multiply blend overlay (sunset dock vibe)
+      ctx.save(); ctx.globalAlpha = 0.22;
+      ctx.fillStyle = "rgba(255,140,30,1)";
+      ctx.globalCompositeOperation = "multiply";
+      ctx.fillRect(0, 0, GAME_W, GAME_H);
+      ctx.restore();
 
-    // Submarine body — clumsy crayon rectangle
-    const subX = cx - 180, subY = cy - 55, subW = 360, subH = 80;
-    // Hull outline (crayon-style: multiple strokes slightly offset)
-    for (let s = 0; s < 3; s++) {
-      ctx.strokeStyle = `rgba(20,80,180,${0.55 - s * 0.12})`;
-      ctx.lineWidth = 6 - s;
-      ctx.beginPath(); ctx.roundRect(subX + s, subY + s, subW, subH, 12); ctx.stroke();
-    }
-    // Hull fill
-    ctx.fillStyle = "rgba(60,120,220,0.12)"; ctx.beginPath(); ctx.roundRect(subX, subY, subW, subH, 12); ctx.fill();
-
-    // Conning tower
-    ctx.strokeStyle = "rgba(20,80,180,0.6)"; ctx.lineWidth = 5;
-    ctx.beginPath(); ctx.roundRect(cx - 30, subY - 48, 60, 52, 6); ctx.stroke();
-    ctx.fillStyle = "rgba(60,120,220,0.10)"; ctx.beginPath(); ctx.roundRect(cx - 30, subY - 48, 60, 52, 6); ctx.fill();
-
-    // Periscope
-    ctx.strokeStyle = "rgba(20,80,180,0.55)"; ctx.lineWidth = 4;
-    ctx.beginPath(); ctx.moveTo(cx + 10, subY - 48); ctx.lineTo(cx + 10, subY - 80); ctx.lineTo(cx + 30, subY - 80); ctx.stroke();
-
-    // Propeller
-    ctx.strokeStyle = "rgba(20,80,180,0.50)"; ctx.lineWidth = 3;
-    for (let p = 0; p < 4; p++) {
-      const pAngle = (p / 4) * Math.PI * 2 + t * 2;
-      ctx.beginPath();
-      ctx.moveTo(subX + subW + 2, cy);
-      ctx.lineTo(subX + subW + 2 + Math.cos(pAngle) * 18, cy + Math.sin(pAngle) * 18);
-      ctx.stroke();
-    }
-
-    // Crayon waves below sub
-    ctx.strokeStyle = "rgba(20,100,200,0.35)"; ctx.lineWidth = 3;
-    for (let w = 0; w < 4; w++) {
-      const wY = subY + subH + 18 + w * 14;
-      ctx.beginPath(); ctx.moveTo(subX - 20, wY);
-      for (let wx2 = subX - 20; wx2 <= subX + subW + 20; wx2 += 30) {
-        ctx.lineTo(wx2 + 15, wY - 8); ctx.lineTo(wx2 + 30, wY);
+      // Film grain
+      ctx.save();
+      ctx.globalAlpha = 0.05 + Math.abs(Math.sin(t * 19.7)) * 0.02;
+      for (let gy = 0; gy < GAME_H; gy += 2) {
+        for (let gx = 0; gx < GAME_W; gx += 2) {
+          if (Math.random() > 0.5) {
+            const v = Math.floor(Math.random() * 50);
+            ctx.fillStyle = `rgba(${v + 200},${v + 130},${v + 40},0.55)`;
+            ctx.fillRect(gx, gy, 2, 2);
+          }
+        }
       }
-      ctx.stroke();
+      ctx.restore();
+
+      // Vintage vignette — stronger at corners, warm brown tone
+      const vig = ctx.createRadialGradient(cx, cy, GAME_H * 0.18, cx, cy, GAME_H * 0.78);
+      vig.addColorStop(0, "rgba(0,0,0,0)");
+      vig.addColorStop(1, "rgba(30,10,0,0.65)");
+      ctx.fillStyle = vig; ctx.fillRect(0, 0, GAME_W, GAME_H);
+    } else {
+      // ── Procedural fallback: crayon submarine on paper ──
+      const paper = ctx.createLinearGradient(0, 0, GAME_W, GAME_H);
+      paper.addColorStop(0, "rgba(255,252,235,1)"); paper.addColorStop(1, "rgba(245,238,210,1)");
+      ctx.fillStyle = paper; ctx.fillRect(0, 0, GAME_W, GAME_H);
+
+      ctx.strokeStyle = "rgba(180,170,140,0.22)"; ctx.lineWidth = 1;
+      for (let ly = 60; ly < GAME_H; ly += 28) { ctx.beginPath(); ctx.moveTo(0, ly); ctx.lineTo(GAME_W, ly); ctx.stroke(); }
+
+      const subX = cx - 180, subY = cy - 55, subW = 360, subH = 80;
+      for (let s = 0; s < 3; s++) {
+        ctx.strokeStyle = `rgba(20,80,180,${0.55 - s * 0.12})`; ctx.lineWidth = 6 - s;
+        ctx.beginPath(); ctx.roundRect(subX + s, subY + s, subW, subH, 12); ctx.stroke();
+      }
+      ctx.fillStyle = "rgba(60,120,220,0.12)"; ctx.beginPath(); ctx.roundRect(subX, subY, subW, subH, 12); ctx.fill();
+
+      ctx.save(); ctx.textAlign = "center"; ctx.font = "bold 62px Georgia, serif";
+      for (let ds = 2; ds >= 0; ds--) {
+        ctx.fillStyle = `rgba(220,40,20,${0.72 - ds * 0.18})`;
+        ctx.fillText("DAD", cx + ds * 1.5, cy + ds * 1.5);
+      }
+      ctx.restore();
     }
 
-    // "DAD" in big clumsy crayon letters
-    ctx.save();
-    ctx.textAlign = "center";
-    ctx.font = "bold 62px Georgia, serif";
-    ctx.lineWidth = 3;
-    for (let ds = 2; ds >= 0; ds--) {
-      ctx.fillStyle = `rgba(220,40,20,${0.72 - ds * 0.18})`;
-      ctx.fillText("DAD", cx + ds * 1.5, cy + ds * 1.5);
-    }
-    ctx.restore();
-
-    // Glass crack effect — appears during hold phase
+    // Glass crack effect — appears during hold phase regardless of photo/procedural
     if (this.memoryFlashPhase === "hold" || this.memoryFlashPhase === "out") {
-      const crackProgress = this.memoryFlashPhase === "out" ? globalAlpha : Math.min(1, (1 - (globalAlpha > 0.95 ? 0 : 0)) * 0.7 + 0.3);
+      const crackProgress = this.memoryFlashPhase === "out" ? globalAlpha : Math.min(1, 0.7 + 0.3);
       const crackAlpha = this.memoryFlashPhase === "hold" ? Math.min(1, (1 - globalAlpha) * 3 + 0.25) : 1 - globalAlpha * 0.8;
       ctx.strokeStyle = `rgba(80,80,80,${crackAlpha * crackProgress * 0.75})`; ctx.lineWidth = 1.2;
       const cracks: [number,number,number,number][] = [
@@ -8520,7 +8759,6 @@ class EchoesGame {
       ];
       for (const [x1,y1,x2,y2] of cracks) {
         ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
-        // Branch cracks
         const midX = (x1+x2)/2, midY = (y1+y2)/2;
         ctx.beginPath(); ctx.moveTo(midX, midY);
         ctx.lineTo(midX + (y2-y1)*0.3, midY + (x1-x2)*0.3); ctx.stroke();
@@ -8532,98 +8770,119 @@ class EchoesGame {
     const ctx = this.hudCtx;
     const cx = GAME_W / 2, cy = GAME_H / 2;
 
-    // Clean white paper background
-    ctx.fillStyle = "rgba(255,255,252,1)"; ctx.fillRect(0, 0, GAME_W, GAME_H);
+    // ── Warm cream background — soft-focus room ──
+    const bgGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, GAME_H * 0.9);
+    bgGrad.addColorStop(0, "rgba(255,252,240,1)");
+    bgGrad.addColorStop(0.7, "rgba(248,240,218,1)");
+    bgGrad.addColorStop(1, "rgba(235,222,195,1)");
+    ctx.fillStyle = bgGrad; ctx.fillRect(0, 0, GAME_W, GAME_H);
 
-    // Paper edges — slightly dog-eared
-    ctx.fillStyle = "rgba(240,235,220,0.4)";
-    ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(40,0); ctx.lineTo(0,40); ctx.fill();
-    ctx.beginPath(); ctx.moveTo(GAME_W,0); ctx.lineTo(GAME_W-40,0); ctx.lineTo(GAME_W,40); ctx.fill();
-
-    // Sun drawing — bright yellow crayon
-    const sunCX = cx - 60, sunCY = cy - 80, sunR = 52;
-    // Sun glow
-    const sunGlow = ctx.createRadialGradient(sunCX, sunCY, 0, sunCX, sunCY, sunR * 2.2);
-    sunGlow.addColorStop(0, "rgba(255,240,50,0.45)");
-    sunGlow.addColorStop(1, "rgba(255,240,50,0)");
-    ctx.fillStyle = sunGlow; ctx.fillRect(sunCX - sunR * 2.5, sunCY - sunR * 2.5, sunR * 5, sunR * 5);
-
-    // Sun circle (thick crayon strokes — imperfect circle)
-    for (let s = 0; s < 4; s++) {
-      ctx.strokeStyle = `rgba(255,200,20,${0.75 - s * 0.15})`;
-      ctx.lineWidth = 8 - s * 1.5;
-      ctx.beginPath();
-      ctx.arc(sunCX + s * 0.5, sunCY + s * 0.5, sunR - s, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-    ctx.fillStyle = "rgba(255,230,30,0.4)"; ctx.beginPath(); ctx.arc(sunCX, sunCY, sunR, 0, Math.PI * 2); ctx.fill();
-
-    // Sun rays — uneven, child-drawn
-    const rayLengths = [38, 28, 42, 26, 40, 32, 36, 30, 44, 27, 35, 31];
-    for (let r = 0; r < 12; r++) {
-      const angle = (r / 12) * Math.PI * 2 + 0.1 * Math.sin(r * 2.3);
-      const rayLen = rayLengths[r] ?? 34;
-      const jitter = Math.sin(r * 3.7 + 1.2) * 5; // wobbly rays
-      ctx.strokeStyle = `rgba(255,190,10,0.70)`; ctx.lineWidth = 5;
-      ctx.lineCap = "round";
-      ctx.beginPath();
-      ctx.moveTo(sunCX + Math.cos(angle) * (sunR + 8), sunCY + Math.sin(angle) * (sunR + 8));
-      ctx.lineTo(sunCX + Math.cos(angle) * (sunR + rayLen + jitter), sunCY + Math.sin(angle) * (sunR + rayLen + jitter));
-      ctx.stroke();
-    }
-
-    // Tiny child's hand — lower right, holding yellow crayon
-    // Hand silhouette — very small, delicate
-    const handCX = cx + 95, handCY = cy + 55;
-    const handGrad = ctx.createRadialGradient(handCX, handCY - 10, 0, handCX, handCY, 55);
-    handGrad.addColorStop(0, "rgba(230,190,155,0.82)");
-    handGrad.addColorStop(0.6, "rgba(215,170,130,0.5)");
-    handGrad.addColorStop(1, "rgba(200,160,120,0)");
-    ctx.fillStyle = handGrad; ctx.beginPath(); ctx.ellipse(handCX, handCY, 35, 28, 0.3, 0, Math.PI * 2); ctx.fill();
-
-    // Tiny fingers
-    ctx.strokeStyle = "rgba(215,165,125,0.65)"; ctx.lineWidth = 5; ctx.lineCap = "round";
-    for (let f = 0; f < 4; f++) {
-      const fingerAngle = -0.7 + f * 0.38;
-      const fLen = 20 + f * 2;
-      ctx.beginPath();
-      ctx.moveTo(handCX - 12 + f * 8, handCY - 14);
-      ctx.lineTo(handCX - 12 + f * 8 + Math.cos(fingerAngle) * fLen, handCY - 14 + Math.sin(fingerAngle) * fLen);
-      ctx.stroke();
-    }
-    // Thumb
-    ctx.beginPath();
-    ctx.moveTo(handCX - 26, handCY - 4);
-    ctx.lineTo(handCX - 42, handCY - 22);
-    ctx.stroke();
-
-    // Yellow crayon held in hand
+    // ── White sheet of paper on the floor in front of the girl ──
+    const paperX = cx - 130, paperY = cy + 30, paperW = 280, paperH = 200;
     ctx.save();
-    ctx.translate(handCX + 8, handCY - 28); ctx.rotate(-0.85);
-    ctx.fillStyle = "rgba(255,210,20,0.88)"; ctx.fillRect(-3, -28, 7, 30);
-    ctx.fillStyle = "rgba(200,160,10,0.7)"; ctx.fillRect(-3, -28, 7, 5);
-    // Crayon tip
-    ctx.fillStyle = "rgba(255,220,50,0.92)";
-    ctx.beginPath(); ctx.moveTo(-3, 2); ctx.lineTo(4, 2); ctx.lineTo(0.5, 12); ctx.fill();
+    ctx.shadowColor = "rgba(160,140,110,0.3)"; ctx.shadowBlur = 18; ctx.shadowOffsetY = 6;
+    ctx.fillStyle = "rgba(255,255,250,0.96)"; ctx.fillRect(paperX, paperY, paperW, paperH);
+    ctx.restore();
+    // Paper edge
+    ctx.strokeStyle = "rgba(220,210,190,0.6)"; ctx.lineWidth = 1;
+    ctx.strokeRect(paperX, paperY, paperW, paperH);
+
+    // ── Scattered colorful crayons on the floor around the paper ──
+    const crayonColors = ["#E8332A","#2255CC","#22AA44","#DDCC11","#EE7711","#AA22CC","#FF88AA","#33BBDD"];
+    const crayonData = [
+      { x: paperX - 55, y: paperY + 60, rot: -0.55 },
+      { x: paperX + paperW + 30, y: paperY + 40, rot: 0.38 },
+      { x: paperX + 30, y: paperY + paperH + 25, rot: -0.12 },
+      { x: paperX + paperW - 60, y: paperY + paperH + 28, rot: 0.65 },
+      { x: paperX - 45, y: paperY + 140, rot: -0.9 },
+      { x: paperX + paperW + 15, y: paperY + 120, rot: 0.25 },
+      { x: cx - 10, y: paperY + paperH + 22, rot: -0.3 },
+      { x: paperX + paperW + 40, y: paperY + 170, rot: -0.72 },
+    ];
+    for (let ci = 0; ci < crayonData.length; ci++) {
+      const cd = crayonData[ci];
+      const col = crayonColors[ci % crayonColors.length];
+      ctx.save();
+      ctx.translate(cd.x, cd.y); ctx.rotate(cd.rot);
+      ctx.fillStyle = col; ctx.globalAlpha = 0.82;
+      ctx.fillRect(-4, -35, 8, 40);
+      ctx.fillStyle = "rgba(200,180,150,0.7)";
+      ctx.fillRect(-4, -35, 8, 6);
+      ctx.fillStyle = col;
+      ctx.globalAlpha = 0.9;
+      ctx.beginPath(); ctx.moveTo(-4, 5); ctx.lineTo(4, 5); ctx.lineTo(0, 16); ctx.fill();
+      ctx.restore();
+    }
+
+    // ── Crayon drawings on the white paper — rough child scribbles ──
+    ctx.save(); ctx.beginPath(); ctx.rect(paperX, paperY, paperW, paperH); ctx.clip();
+    // House scribble
+    ctx.strokeStyle = "rgba(220,50,30,0.65)"; ctx.lineWidth = 3.5; ctx.lineCap = "round";
+    const hx = paperX + 30, hy = paperY + 80;
+    ctx.beginPath(); ctx.moveTo(hx, hy+60); ctx.lineTo(hx, hy); ctx.lineTo(hx+55, hy-38); ctx.lineTo(hx+110, hy); ctx.lineTo(hx+110, hy+60); ctx.closePath(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(hx+40, hy+60); ctx.lineTo(hx+40, hy+25); ctx.lineTo(hx+72, hy+25); ctx.lineTo(hx+72, hy+60); ctx.stroke();
+    // Sun on paper
+    ctx.strokeStyle = "rgba(220,180,10,0.75)"; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(paperX+paperW-55, paperY+45, 20, 0, Math.PI*2); ctx.stroke();
+    for (let r = 0; r < 8; r++) {
+      const ra = (r/8)*Math.PI*2;
+      ctx.beginPath();
+      ctx.moveTo(paperX+paperW-55+Math.cos(ra)*22, paperY+45+Math.sin(ra)*22);
+      ctx.lineTo(paperX+paperW-55+Math.cos(ra)*34, paperY+45+Math.sin(ra)*34);
+      ctx.stroke();
+    }
     ctx.restore();
 
-    // Faint crayon marks — partially drawn lines the child already made
-    ctx.save(); ctx.globalAlpha *= 0.35;
-    ctx.strokeStyle = "rgba(255,200,20,0.6)"; ctx.lineWidth = 4; ctx.lineCap = "round";
-    ctx.beginPath(); ctx.moveTo(sunCX + sunR + 10, sunCY - 20);
-    ctx.lineTo(sunCX + sunR + 42, sunCY - 30); ctx.stroke(); // partial ray being drawn
+    // ── Small girl silhouette — back view, hunched over drawing ──
+    const gx = cx + 55, gy = cy - 30;
+    // Dress/body
+    ctx.save();
+    ctx.fillStyle = "rgba(140,100,200,0.72)"; // purple dress silhouette
+    ctx.beginPath();
+    ctx.moveTo(gx - 28, gy + 90);
+    ctx.quadraticCurveTo(gx - 38, gy + 55, gx - 18, gy + 20);
+    ctx.quadraticCurveTo(gx, gy + 10, gx + 18, gy + 20);
+    ctx.quadraticCurveTo(gx + 38, gy + 55, gx + 28, gy + 90);
+    ctx.closePath(); ctx.fill();
+    // Head
+    ctx.fillStyle = "rgba(200,165,115,0.78)";
+    ctx.beginPath(); ctx.ellipse(gx, gy + 2, 20, 22, 0, 0, Math.PI * 2); ctx.fill();
+    // Hair — dark, falls forward (hunched over)
+    ctx.fillStyle = "rgba(55,35,20,0.80)";
+    ctx.beginPath();
+    ctx.arc(gx, gy - 2, 21, Math.PI, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(gx-21, gy+2); ctx.quadraticCurveTo(gx-30, gy+30, gx-22, gy+50); ctx.lineTo(gx-14, gy+50); ctx.quadraticCurveTo(gx-20, gy+30, gx-12, gy+10); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(gx+21, gy+2); ctx.quadraticCurveTo(gx+30, gy+30, gx+20, gy+50); ctx.lineTo(gx+12, gy+50); ctx.quadraticCurveTo(gx+18, gy+30, gx+10, gy+10); ctx.fill();
+    // Left arm reaching down to paper
+    ctx.strokeStyle = "rgba(140,100,200,0.65)"; ctx.lineWidth = 10; ctx.lineCap = "round";
+    ctx.beginPath(); ctx.moveTo(gx-14, gy+36); ctx.quadraticCurveTo(gx-40, gy+60, gx-30, gy+82); ctx.stroke();
+    // Tiny hand + crayon (red)
+    ctx.fillStyle = "rgba(200,165,115,0.7)"; ctx.beginPath(); ctx.ellipse(gx-28, gy+86, 8, 6, -0.4, 0, Math.PI*2); ctx.fill();
+    ctx.save(); ctx.translate(gx-28, gy+94); ctx.rotate(0.2);
+    ctx.fillStyle = "#E8332A"; ctx.globalAlpha = 0.88; ctx.fillRect(-2, 0, 5, 18);
+    ctx.fillStyle = "#E8332A"; ctx.beginPath(); ctx.moveTo(-2,18); ctx.lineTo(3,18); ctx.lineTo(0.5,26); ctx.fill();
+    ctx.restore();
     ctx.restore();
 
-    // Little caption — bottom, faint
-    ctx.fillStyle = "rgba(180,160,120,0.32)"; ctx.font = "italic 11px monospace"; ctx.textAlign = "center";
-    ctx.fillText("— age 5 —", cx, GAME_H - 30);
+    // ── Soft-focus vignette — warm edges ──
+    const vig = ctx.createRadialGradient(cx, cy, GAME_H * 0.22, cx, cy, GAME_H * 0.75);
+    const vp = 0.10 + Math.sin(t * 0.55) * 0.03;
+    vig.addColorStop(0, "rgba(255,240,200,0)");
+    vig.addColorStop(1, `rgba(180,140,80,${vp})`);
+    ctx.fillStyle = vig; ctx.fillRect(0, 0, GAME_W, GAME_H);
 
-    // Gentle ambient pulse — warm vignette breathing
-    const vignette = ctx.createRadialGradient(cx, cy, GAME_H * 0.25, cx, cy, GAME_H * 0.75);
-    const v = 0.08 + Math.sin(t * 0.8) * 0.04;
-    vignette.addColorStop(0, "rgba(255,240,200,0)");
-    vignette.addColorStop(1, `rgba(200,160,90,${v})`);
-    ctx.fillStyle = vignette; ctx.fillRect(0, 0, GAME_W, GAME_H);
+    // ── Film grain ──
+    ctx.save(); ctx.globalAlpha = 0.04 + Math.abs(Math.sin(t * 21)) * 0.015;
+    for (let gy2 = 0; gy2 < GAME_H; gy2 += 3) {
+      for (let gx2 = 0; gx2 < GAME_W; gx2 += 3) {
+        if (Math.random() > 0.55) {
+          const v = Math.floor(Math.random() * 40) + 160;
+          ctx.fillStyle = `rgba(${v},${v-20},${v-50},0.5)`;
+          ctx.fillRect(gx2, gy2, 3, 3);
+        }
+      }
+    }
+    ctx.restore();
   }
 
   // ============================================================
@@ -8631,54 +8890,68 @@ class EchoesGame {
   // ============================================================
   private renderCollapse() {
     const ctx = this.hudCtx;
-    const t = this.collapseTimer / 1000;
-    const pct = Math.min(1, this.collapseTimer / 8000);
+    const TOTAL = 14000;
+    const pct = Math.min(1, this.collapseTimer / TOTAL);
 
-    // ── Phase 0–40%: Camera shake builds as geometry tears apart ──
-    if (pct < 0.4) {
-      const shakeStr = Math.sin(pct * Math.PI / 0.4) * 0.015;
-      this.camera.position.x += (Math.random() - 0.5) * shakeStr;
-      this.camera.position.y = 1.65 + (Math.random() - 0.5) * shakeStr * 0.6;
+    // ── Phase 0–55%: Wireframe world fractures — dark base with tear artifacts ──
+    if (pct < 0.72) {
+      ctx.fillStyle = `rgba(0,0,0,${0.85 + pct * 0.14})`; ctx.fillRect(0, 0, GAME_W, GAME_H);
     }
 
-    // Dark base — deepens as scene dissolves
-    ctx.fillStyle = `rgba(0,0,0,${0.87 + pct * 0.12})`; ctx.fillRect(0, 0, GAME_W, GAME_H);
+    // Camera shake builds during fracture phase
+    if (pct < 0.55) {
+      const shakeStr = pct * 0.025;
+      this.camera.position.x += (Math.random() - 0.5) * shakeStr;
+      this.camera.position.y = 1.65 + (Math.random() - 0.5) * shakeStr * 0.5;
+    }
 
-    // ── Phase 10–60%: Horizontal line-segment dropout (geometry teardown) ──
-    if (pct > 0.1 && pct < 0.62) {
-      const intensity = (pct - 0.1) / 0.52;
-      const tearCount = Math.floor(intensity * 24);
+    // ── Horizontal wireframe segment dropout + digital dust particles ──
+    if (pct > 0.05 && pct < 0.58) {
+      const intensity = (pct - 0.05) / 0.53;
+      const tearCount = Math.floor(intensity * 32);
       ctx.save(); ctx.globalCompositeOperation = "destination-out";
       for (let i = 0; i < tearCount; i++) {
         const yPos = Math.random() * GAME_H;
-        ctx.fillStyle = `rgba(0,0,0,${0.45 + Math.random() * 0.4})`;
-        ctx.fillRect(Math.random() * GAME_W * 0.4, yPos, (0.35 + Math.random() * 0.65) * GAME_W, 1 + Math.random() * 2.5);
+        ctx.fillStyle = `rgba(0,0,0,${0.35 + Math.random() * 0.5})`;
+        ctx.fillRect(Math.random() * GAME_W * 0.5, yPos, (0.2 + Math.random() * 0.8) * GAME_W, 1 + Math.random() * 3);
+      }
+      ctx.restore();
+
+      // Digital dust particles drifting up as world dissolves
+      ctx.save(); ctx.globalAlpha = intensity * 0.35;
+      for (let d = 0; d < Math.floor(intensity * 18); d++) {
+        const px2 = Math.random() * GAME_W;
+        const py2 = Math.random() * GAME_H;
+        ctx.fillStyle = `rgba(0,${Math.floor(Math.random()*80+80)},${Math.floor(Math.random()*100+120)},0.7)`;
+        ctx.fillRect(px2, py2, 1 + Math.random() * 2, 1 + Math.random() * 2);
       }
       ctx.restore();
     }
 
-    // ── Phase 0–20%: One brief critical status line, then gone ──
-    if (pct < 0.2) {
-      const a = 1 - pct / 0.2;
-      ctx.fillStyle = `rgba(0,220,255,${a * 0.55})`; ctx.font = "bold 18px monospace"; ctx.textAlign = "center";
-      ctx.fillText("SYSTEM STATUS: CRITICAL", GAME_W / 2, GAME_H / 2);
+    // ── White radial bloom — bleeds in from edges (55–72%) ──
+    if (this.collapseWhite > 0) {
+      // Radial from edges inward (not center outward)
+      const edgeGrad = ctx.createRadialGradient(GAME_W/2, GAME_H/2, GAME_H * 0.1, GAME_W/2, GAME_H/2, GAME_H * 0.85);
+      edgeGrad.addColorStop(0, `rgba(255,255,255,0)`);
+      edgeGrad.addColorStop(1, `rgba(255,255,255,${this.collapseWhite})`);
+      ctx.fillStyle = edgeGrad; ctx.fillRect(0, 0, GAME_W, GAME_H);
+      // Then pure white flood once nearly full
+      if (this.collapseWhite > 0.6) {
+        ctx.fillStyle = `rgba(255,255,255,${(this.collapseWhite - 0.6) / 0.4})`; ctx.fillRect(0, 0, GAME_W, GAME_H);
+      }
     }
 
-    // ── Phase 55–100%: Pure white-out ──
-    if (pct > 0.55) {
-      const white = Math.min(1, (pct - 0.55) / 0.45);
-      ctx.fillStyle = `rgba(255,255,255,${white})`; ctx.fillRect(0, 0, GAME_W, GAME_H);
-    }
-
-    // ── Final card: white on white — text is barely visible against the white field ──
-    if (this.collapseWhite > 0.92) {
-      const cardA = Math.min(1, (this.collapseWhite - 0.92) / 0.08);
-      ctx.textAlign = "center";
-      // Slightly warm-gray text on white — understated, not branded
-      ctx.fillStyle = `rgba(170,165,160,${cardA * 0.48})`; ctx.font = "11px monospace";
-      ctx.fillText("ECHOES  OF  THE  DEEP", GAME_W / 2, GAME_H / 2 - 5);
-      ctx.fillStyle = `rgba(155,150,145,${cardA * 0.36})`; ctx.font = "10px monospace";
-      ctx.fillText("2024", GAME_W / 2, GAME_H / 2 + 16);
+    // ── Fade to black for end credits (86–100%) ──
+    if (this.collapseBlack > 0) {
+      ctx.fillStyle = `rgba(0,0,0,${this.collapseBlack})`; ctx.fillRect(0, 0, GAME_W, GAME_H);
+      if (this.collapseBlack > 0.6) {
+        const cardA = Math.min(1, (this.collapseBlack - 0.6) / 0.4);
+        ctx.textAlign = "center";
+        ctx.fillStyle = `rgba(160,155,150,${cardA * 0.55})`; ctx.font = "13px monospace";
+        ctx.fillText("ECHOES  OF  THE  DEEP", GAME_W / 2, GAME_H / 2 - 8);
+        ctx.fillStyle = `rgba(140,135,130,${cardA * 0.38})`; ctx.font = "10px monospace";
+        ctx.fillText("2026", GAME_W / 2, GAME_H / 2 + 14);
+      }
     }
   }
 
@@ -9086,6 +9359,22 @@ class EchoesGame {
   private renderGameOver() {
     const ctx = this.hudCtx;
     const t = Date.now() / 1000;
+
+    // ── Ending credits screen (post-collapse) ──
+    if (this.gameOverReason === "ending") {
+      ctx.fillStyle = 'rgba(0,0,0,1)'; ctx.fillRect(0, 0, GAME_W, GAME_H);
+      const a = Math.min(1, (Date.now() - (this._endingEnteredAt ?? Date.now())) / 2000);
+      ctx.textAlign = 'center';
+      ctx.fillStyle = `rgba(150,145,140,${a * 0.6})`; ctx.font = '15px monospace';
+      ctx.fillText('ECHOES  OF  THE  DEEP', GAME_W/2, GAME_H/2 - 28);
+      ctx.fillStyle = `rgba(120,115,110,${a * 0.38})`; ctx.font = '10px monospace';
+      ctx.fillText('2026', GAME_W/2, GAME_H/2);
+      if (a >= 1 && Math.sin(t * 1.5) > 0) {
+        ctx.fillStyle = 'rgba(80,140,180,0.45)'; ctx.font = '11px monospace';
+        ctx.fillText('[ PRESS SPACE TO RETURN TO MENU ]', GAME_W/2, GAME_H/2 + 44);
+      }
+      return;
+    }
 
     // Full-screen near-black overlay
     ctx.fillStyle = 'rgba(0,0,0,0.95)'; ctx.fillRect(0, 0, GAME_W, GAME_H);
