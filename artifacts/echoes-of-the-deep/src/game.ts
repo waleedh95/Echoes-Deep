@@ -1400,6 +1400,14 @@ class AudioSys {
     this.lullabyGain.gain.linearRampToValueAtTime(Math.max(0, Math.min(1, v)), this.ctx.currentTime + 1.2);
   }
 
+  setMasterGain(target: number, rampSec: number) {
+    if (!this.ctx || !this.master) return;
+    const now = this.ctx.currentTime;
+    this.master.gain.cancelScheduledValues(now);
+    this.master.gain.setValueAtTime(this.master.gain.value, now);
+    this.master.gain.linearRampToValueAtTime(Math.max(0, target), now + rampSec);
+  }
+
   private _ventilatorActive = false;
 
   // Shared ventilator engine — routes to `dest` so gameplay and collapse both reuse this logic.
@@ -2835,6 +2843,20 @@ const _rockLoadPromise: Promise<THREE.BufferGeometry | null> = (async () => {
   }
 })();
 
+// SARA's boat — loaded once at startup; full GLTF scene kept with original textures intact.
+// The boat is exempt from sonar overlay — it renders as solid textured wood, not wireframe.
+const _boatLoadPromise: Promise<THREE.Group | null> = (async () => {
+  try {
+    const loader = new GLTFLoader();
+    const gltf = await loader.loadAsync(
+      `${import.meta.env.BASE_URL}old_wooden_boat_3d_model_model_1778916083601.glb`,
+    );
+    return gltf.scene;
+  } catch {
+    return null;
+  }
+})();
+
 // ============================================================
 // OBSTACLE SCATTER HELPERS
 // ============================================================
@@ -3260,6 +3282,16 @@ class EchoesGame {
   // ── Level 2: Iron Graveyard mechanics ─────────────────────────────────────
   private graveyardBreathTimer = 0;
   private wreckPositions: Vec2[] = [];
+  // SARA's boat zone
+  private _boatGroup: THREE.Group | null = null;
+  private _boatWorldX = 0;   // 2D world-space coordinates for proximity check
+  private _boatWorldY = 0;
+  private _boatZoneActive = false;   // true while player is within the radius
+  private _boatSpeedMult = 1.0;      // current multiplier applied to PLAYER_SPEED
+  private _boatSpeedRampTimer = 0;   // ms elapsed in current speed ramp
+  private _boatSpeedRampDur = 0;     // total ms of current ramp
+  private _boatSpeedRampFrom = 1.0;  // starting value of current ramp
+  private _boatSpeedRampTo = 1.0;    // target value of current ramp
   private bulkheadObstacleIdx = -1;
   private bulkheadMesh: THREE.Mesh | null = null;
   private bulkheadOpen = false;
@@ -3561,6 +3593,15 @@ class EchoesGame {
     this.wreckPositions = [...(def.wreckPositions ?? [])];
     this.bulkheadObstacleIdx = def.bulkheadObstacleIdx ?? -1;
     this.bulkheadMesh = null; this.bulkheadOpen = false; this.bulkheadStalkerClearTimer = 0; this.bulkheadFlareLured = false;
+    // SARA's boat zone — reset per level load
+    // Defensive restore: if player leaves Level 2 while inside the zone, the
+    // master gain is silenced; restore it immediately before the next level starts.
+    if (this._boatZoneActive && this.audioReady) this.audio.setMasterGain(0.6, 0.5);
+    this._boatGroup = null;
+    this._boatWorldX = 0; this._boatWorldY = 0;
+    this._boatZoneActive = false; this._boatSpeedMult = 1.0;
+    this._boatSpeedRampTimer = 0; this._boatSpeedRampDur = 0;
+    this._boatSpeedRampFrom = 1.0; this._boatSpeedRampTo = 1.0;
     // Level 3 — Drowned Metropolis
     this.powerConduits = (def.powerConduits ?? []).map(c => ({ ...c, activated: false }));
     this.conduitMeshObjs = [];
@@ -4004,6 +4045,63 @@ class EchoesGame {
       const bLabel = makeBillboard("AFT BULKHEAD — SEALED", "#FF6600", 3.8, 0.85);
       bLabel.position.set(bMesh.position.x, bMesh.position.y + 2.4, bMesh.position.z);
       this.sceneGroup.add(bLabel);
+    }
+
+    // ── Level 2: SARA's boat — textured GLB, exempt from sonar overlay ───────
+    // Loaded via _boatLoadPromise which runs in parallel with _rockLoadPromise.
+    // We await it here so we can clone the scene synchronously below.
+    if (def.id === 2) {
+      const boatScene = await _boatLoadPromise;
+      if (buildToken !== this._sceneBuildToken) return; // guard against stale build
+      if (boatScene) {
+        const boatGroup = boatScene.clone(true);
+        // Position: slightly off-centre ahead of Level 2 start, resting on the ocean floor
+        const BOAT_X = 480, BOAT_Y = 1350;
+        this._boatWorldX = BOAT_X;
+        this._boatWorldY = BOAT_Y;
+        boatGroup.position.set(BOAT_X * WS, 0, BOAT_Y * WS);
+        boatGroup.rotation.y = Math.PI * 0.15;   // slight angle to the player's path
+        boatGroup.rotation.z = 0.24;              // ~14° list to one side
+        // Scale: GLB units to Three.js world units — boats are ~4-5m long
+        boatGroup.scale.set(1.1, 1.1, 1.1);
+        // Ensure original textures are kept — no sonar overlay applied
+        boatGroup.traverse((child) => {
+          const m = child as THREE.Mesh;
+          if (m.isMesh) {
+            m.castShadow    = false;
+            m.receiveShadow = false;
+          }
+        });
+        this.sceneGroup.add(boatGroup);
+        this._boatGroup = boatGroup;
+
+        // ── "SARA" name plate — faded white canvas text on a small plane ─────
+        const nc = document.createElement("canvas");
+        nc.width = 256; nc.height = 64;
+        const nctx = nc.getContext("2d")!;
+        nctx.clearRect(0, 0, nc.width, nc.height);
+        nctx.font = "bold 38px serif";
+        nctx.textAlign = "left";
+        nctx.textBaseline = "middle";
+        nctx.fillStyle = "rgba(220,210,195,0.38)";  // faded, barely legible
+        nctx.fillText("SARA", 14, 32);
+        const nTex = new THREE.CanvasTexture(nc);
+        const nGeo = new THREE.PlaneGeometry(1.4, 0.35);
+        const nMat = new THREE.MeshBasicMaterial({
+          map: nTex, transparent: true, depthWrite: false,
+          blending: THREE.NormalBlending, side: THREE.DoubleSide,
+        });
+        const namePlane = new THREE.Mesh(nGeo, nMat);
+        // Attach flat against the port hull side — angled outward
+        namePlane.position.set(-0.05, 0.45, 0.9);
+        namePlane.rotation.x = -0.15;
+        namePlane.rotation.y = Math.PI * 0.5;
+        boatGroup.add(namePlane);
+      } else {
+        // GLB failed to load — leave _boatWorldX/Y at 0 so the proximity zone
+        // guard triggers correctly (no invisible slow/silence without the visual)
+        this._boatGroup = null;
+      }
     }
 
     // ── Level 2: Iron Graveyard — broken ship wrecks ─────────────────────────
@@ -4752,6 +4850,7 @@ class EchoesGame {
 
     this.lvlTime += dt / 1000;
     this.updateDialogue();
+    if (this.lvlIdx === 1) this.updateBoatZone(dt); // must run before updatePlayer + updateEnemies for frame-accurate zone state
     this.updatePlayer(dt);
     this.updateCameraPhysics(dt);
     this.updateFlares(dt);    // emit flare events BEFORE enemies consume them this frame
@@ -4837,6 +4936,48 @@ class EchoesGame {
   }
 
   private miaProximity = 0; // 0..1, drives Level 4 glitch intensity
+
+  private updateBoatZone(dt: number) {
+    // Only active when Level 2 has successfully placed the boat (non-zero position)
+    if (this._boatWorldX === 0 && this._boatWorldY === 0) return;
+
+    const ZONE_RADIUS  = 375;   // 2D px — enter/exit threshold
+    const MUSIC_IN     = 0.08;  // master gain inside zone (≤10%)
+    const MUSIC_NORMAL = 0.6;   // default master gain
+    const ENTER_MS     = 2000;  // ms to ramp speed down to 0.4 on entry
+    const EXIT_MS      = 1500;  // ms to ramp speed back to 1.0 on exit
+
+    const dist     = Math.hypot(this.px - this._boatWorldX, this.py - this._boatWorldY);
+    const wasActive = this._boatZoneActive;
+    this._boatZoneActive = dist < ZONE_RADIUS;
+
+    if (!wasActive && this._boatZoneActive) {
+      // Entered — start a deterministic ramp from current speed to 0.4 over ENTER_MS
+      this._boatSpeedRampFrom  = this._boatSpeedMult;
+      this._boatSpeedRampTo    = 0.4;
+      this._boatSpeedRampDur   = ENTER_MS;
+      this._boatSpeedRampTimer = 0;
+      if (this.audioReady) this.audio.setMasterGain(MUSIC_IN, ENTER_MS / 1000);
+    } else if (wasActive && !this._boatZoneActive) {
+      // Exited — start a deterministic ramp from current speed to 1.0 over EXIT_MS
+      this._boatSpeedRampFrom  = this._boatSpeedMult;
+      this._boatSpeedRampTo    = 1.0;
+      this._boatSpeedRampDur   = EXIT_MS;
+      this._boatSpeedRampTimer = 0;
+      if (this.audioReady) this.audio.setMasterGain(MUSIC_NORMAL, 3.0);
+    }
+
+    // Advance the deterministic linear ramp
+    if (this._boatSpeedRampDur > 0) {
+      this._boatSpeedRampTimer = Math.min(this._boatSpeedRampTimer + dt, this._boatSpeedRampDur);
+      const t = this._boatSpeedRampTimer / this._boatSpeedRampDur;
+      this._boatSpeedMult = this._boatSpeedRampFrom + (this._boatSpeedRampTo - this._boatSpeedRampFrom) * t;
+      if (this._boatSpeedRampTimer >= this._boatSpeedRampDur) {
+        this._boatSpeedMult  = this._boatSpeedRampTo;
+        this._boatSpeedRampDur = 0;  // ramp complete
+      }
+    }
+  }
 
   private updateLullaby() {
     const miaPod = this.pods.find(p => p.id === "mia");
@@ -4955,7 +5096,7 @@ class EchoesGame {
     // ── Apply force from smoothed input ──
     // Engine cut (Q): kills all thrust — sub coasts on inertia and goes nearly silent
     const engineCut = this.engineCutActive;
-    const spd = PLAYER_SPEED * (boosting ? PLAYER_BOOST_MULT : 1);
+    const spd = PLAYER_SPEED * (boosting ? PLAYER_BOOST_MULT : 1) * this._boatSpeedMult;
     const forceX = engineCut ? 0 : (fwdX * this.smoothFwd + rgtX * this.smoothSide) * spd;
     const forceY = engineCut ? 0 : (fwdY * this.smoothFwd + rgtY * this.smoothSide) * spd;
     this.pvx += forceX * dtS;
@@ -5128,6 +5269,9 @@ class EchoesGame {
     const dtS = dt / 1000;
     const playerSpeed = Math.hypot(this.pvx, this.pvy);
     const playerIsSlow = playerSpeed < PLAYER_SPEED * LEV_PLAYER_SLOW_FRAC;
+
+    // Freeze all enemy AI while inside SARA's boat zone — stillness, silence
+    if (this._boatZoneActive) return;
 
     for (let i = 0; i < this.enemies.length; i++) {
       const e = this.enemies[i];
