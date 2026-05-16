@@ -1085,6 +1085,53 @@ class AudioSys {
     this.levAlertGain.gain.linearRampToValueAtTime(Math.max(0, Math.min(0.55, vol)), this.ctx.currentTime + 0.5);
   }
 
+  // ── LEVIATHAN PULSE — distinct sound cue fired when Level 3 sonar disruption pulse triggers ──
+  leviathanPulse() {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx;
+    const t0 = ctx.currentTime;
+
+    // Layer 1: sub-bass impact thud — noise burst shaped into a deep concussive hit
+    const impactDur = 0.9;
+    const impactBuf = ctx.createBuffer(1, Math.ceil(ctx.sampleRate * impactDur), ctx.sampleRate);
+    const impactData = impactBuf.getChannelData(0);
+    for (let i = 0; i < impactData.length; i++) impactData[i] = (Math.random() * 2 - 1);
+    const impactSrc = ctx.createBufferSource(); impactSrc.buffer = impactBuf;
+    const impactLp = ctx.createBiquadFilter(); impactLp.type = "lowpass"; impactLp.frequency.value = 55;
+    const impactEnv = ctx.createGain();
+    impactEnv.gain.setValueAtTime(0.0001, t0);
+    impactEnv.gain.linearRampToValueAtTime(0.55, t0 + 0.02);
+    impactEnv.gain.exponentialRampToValueAtTime(0.001, t0 + impactDur);
+    impactSrc.connect(impactLp); impactLp.connect(impactEnv); impactEnv.connect(this.master);
+    impactSrc.start(t0); impactSrc.stop(t0 + impactDur);
+    impactSrc.onended = () => { try { impactSrc.disconnect(); impactLp.disconnect(); impactEnv.disconnect(); } catch { /**/ } };
+
+    // Layer 2: descending pitch sweep — oscillator falling from 90 Hz → 28 Hz over 1.1 s
+    // (whale-call-meets-sonar, clearly different from the steady sawtooth alert rumble)
+    const sweepOsc = ctx.createOscillator(); sweepOsc.type = "sine";
+    sweepOsc.frequency.setValueAtTime(90, t0);
+    sweepOsc.frequency.exponentialRampToValueAtTime(28, t0 + 1.1);
+    const sweepFlt = ctx.createBiquadFilter(); sweepFlt.type = "bandpass"; sweepFlt.frequency.value = 60; sweepFlt.Q.value = 1.8;
+    const sweepEnv = ctx.createGain();
+    sweepEnv.gain.setValueAtTime(0.0001, t0);
+    sweepEnv.gain.linearRampToValueAtTime(0.38, t0 + 0.04);
+    sweepEnv.gain.exponentialRampToValueAtTime(0.001, t0 + 1.2);
+    sweepOsc.connect(sweepFlt); sweepFlt.connect(sweepEnv); sweepEnv.connect(this.master);
+    sweepOsc.start(t0); sweepOsc.stop(t0 + 1.25);
+    sweepOsc.onended = () => { try { sweepOsc.disconnect(); sweepFlt.disconnect(); sweepEnv.disconnect(); } catch { /**/ } };
+
+    // Layer 3: metallic resonant sting — short high-pitched ring to sell the sonar disruption
+    const ringOsc = ctx.createOscillator(); ringOsc.type = "sine"; ringOsc.frequency.value = 340;
+    const ringFlt = ctx.createBiquadFilter(); ringFlt.type = "bandpass"; ringFlt.frequency.value = 340; ringFlt.Q.value = 12;
+    const ringEnv = ctx.createGain();
+    ringEnv.gain.setValueAtTime(0.0001, t0 + 0.03);
+    ringEnv.gain.linearRampToValueAtTime(0.12, t0 + 0.07);
+    ringEnv.gain.exponentialRampToValueAtTime(0.001, t0 + 0.55);
+    ringOsc.connect(ringFlt); ringFlt.connect(ringEnv); ringEnv.connect(this.master);
+    ringOsc.start(t0 + 0.03); ringOsc.stop(t0 + 0.6);
+    ringOsc.onended = () => { try { ringOsc.disconnect(); ringFlt.disconnect(); ringEnv.disconnect(); } catch { /**/ } };
+  }
+
   metallicScreech(delay = 0) {
     if (!this.ctx || !this.master) return;
     const ctx = this.ctx; const t0 = ctx.currentTime + delay;
@@ -5817,6 +5864,7 @@ class EchoesGame {
       if (this.levPulseTimer <= 0) {
         this.levPulseTimer = 8000; this.levBlocked = true; this.glitchTimer = 550;
         setTimeout(() => { this.levBlocked = false; }, 1100);
+        if (this.audioReady) this.audio.leviathanPulse();
         this.showSub("[ LEVIATHAN PULSE — SONAR DISRUPTED ]");
       }
     }
