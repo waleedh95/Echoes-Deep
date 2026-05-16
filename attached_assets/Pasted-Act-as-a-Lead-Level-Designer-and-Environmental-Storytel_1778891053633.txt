@@ -1,0 +1,36 @@
+Act as a Lead Level Designer and Environmental Storyteller for "Echoes of the Deep," a dark, submarine-based survival horror game where the player navigates pitch-black environments using a topographical, wireframe-generating sonar.
+
+Objective: I need you to design the flow, visual theme, and specific gameplay challenges for the first three levels of the game. Each level must feel completely distinct in its environment and force the player to use their submarine and sonar in different ways. The ultimate goal of each level is to navigate the hazards and reach a stranded lifepod to rescue a family member.
+
+Here is the baseline I want you to expand upon. Feel free to use your extreme creativity to enhance these concepts, add unique environmental hazards, or suggest entirely better ideas if they fit the dark, psychological survival theme:
+
+Level 1: The Abyssal Forest
+Theme Baseline: A massive underwater forest of towering, petrified kelp or deep-sea coral structures.
+
+Design Requirements: How should the sonar wireframe look when bouncing off thousands of tall, vertical objects?
+
+The Challenge: Design an introductory challenge. The player needs to learn to navigate tight spaces. What environmental hazards (e.g., explosive gas pods, fragile branches that make loud noises if bumped) can you add to teach the player that moving recklessly generates noise and attracts the "Sound-Hunters"?
+
+Level 2: The Iron Graveyard
+Theme Baseline: A chaotic pile of sunken ships, submarines, and metallic debris suspended over a trench.
+
+Design Requirements: The environment should feel jagged, industrial, and claustrophobic. The sonar should return harsh, sharp angles.
+
+The Challenge: Design a maze-like challenge. The player must navigate inside the hollowed-out hulls of massive ships. Include a stealth challenge where a Sound-Hunter is patrolling the same shipwreck, forcing the player to use their engine silently, hide behind bulkheads, and use dropped flares to distract the enemy.
+
+Level 3: The Drowned Metropolis
+Theme Baseline: The ruins of an ancient (or modern) destroyed city sitting at the bottom of the ocean. Crumbling skyscrapers and flooded streets.
+
+Design Requirements: Grand, haunting architecture. A mix of wide-open plazas and tight alleyways.
+
+The Challenge: Introduce verticality and complex puzzle-solving. The player shouldn't just be driving forward; they need to figure out how to open massive city gates or power up old infrastructure using their submarine's tools. Increase the difficulty: how can the architecture itself be dangerous? (e.g., crumbling buildings that collapse and make deafening noise if disturbed).
+
+Your Output Must Include for Each Level:
+
+Visual Description: A vivid description of what the player sees when their sonar pulse illuminates the dark.
+
+Primary Hazard: A unique obstacle or enemy behavior specific to this environment.
+
+The "Golden Path" & Choke Point: Describe the route the player must take to reach the lifepod, including one major "choke point" or puzzle they must survive to beat the level.
+
+Creative Enhancements: Pitch one wild, highly creative idea for each level that I haven't thought of to make it unforgettable.
