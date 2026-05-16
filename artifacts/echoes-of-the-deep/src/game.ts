@@ -1819,6 +1819,16 @@ function level2(): LevelData {
         ],
         wpIdx: 0, speed: 48, hitR: 26, hearingDist: 680, alertDist: 480,
       },
+      // Graveyard Leviathan — sweeps the full Iron Graveyard world
+      {
+        x: 1800, y: 1400, type: "leviathan",
+        waypoints: [
+          { x: 300,  y: 1400 }, { x: 900,  y: 600  }, { x: 1800, y: 400  },
+          { x: 2700, y: 600  }, { x: 3300, y: 1400 }, { x: 2700, y: 1600 },
+          { x: 1800, y: 1650 }, { x: 900,  y: 1600 }, { x: 300,  y: 1400 },
+        ],
+        wpIdx: 0, speed: 52, hitR: 42, hearingDist: 900, alertDist: 700,
+      },
     ],
     pods: [{ x: 3400, y: 860, id: "noah", rescued: false, revealTimer: 0, character: "NOAH", commsLine: '"Dad? Is that you?"' }],
     letters: ["N","O","A","H"],
@@ -8470,7 +8480,7 @@ class EchoesGame {
     ctx.beginPath(); ctx.moveTo(CX + 20, CY + 29); ctx.lineTo(CX + CW - 20, CY + 29); ctx.stroke();
 
     // "DEPTH INCREASING" alert
-    const lvlNames = ['LEVEL II — THE WIFE', 'LEVEL III — FIRST SON', 'LEVEL IV — SECOND CHILD'];
+    const lvlNames = ['LEVEL I — THE ABYSSAL FOREST', 'LEVEL II — THE IRON GRAVEYARD', 'LEVEL III — THE DROWNED METROPOLIS'];
     const searchNames = ['Sara', 'Noah', 'Mia'];
     const depthVals = [35, 65, 95];
     const lvlLabel = lvlNames[this.transitionTargetLvl] ?? `LEVEL ${this.transitionTargetLvl + 1}`;
