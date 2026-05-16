@@ -3621,14 +3621,32 @@ class EchoesGame {
     const start = def.playerStart;
     const pod   = def.pods[0];
     const n     = seq.length;
+
+    // Unit vector along the start→pod direction
+    const dx = pod.x - start.x;
+    const dy = pod.y - start.y;
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+    // Perpendicular unit vector (rotate 90°)
+    const perpX = -dy / len;
+    const perpY =  dx / len;
+
     // Distribute evenly from 20% to 85% along the start→pod line
     // (avoids crowding on top of player spawn or inside the pod chamber)
+    // Maximum lateral offset in world-grid units — keeps letters inside navigable corridors
+    const MAX_PERP = 3.0;
+
     this.letterEntities = seq.map((char, i) => {
       const t = 0.20 + (i / (n - 1 || 1)) * 0.65;
+      // Zigzag: alternate left/right; sine phase (1.9 rad ≈ irrational fraction of 2π)
+      // gives non-repeating magnitude variation for any practical sequence length.
+      const side = i % 2 === 0 ? +1 : -1;
+      const magnitude = Math.min(1.5 + Math.sin(i * 1.9) * 0.7, MAX_PERP);
+      const offsetX = perpX * side * magnitude;
+      const offsetY = perpY * side * magnitude;
       return {
         char,
-        x: start.x + (pod.x - start.x) * t,
-        y: start.y + (pod.y - start.y) * t,
+        x: start.x + dx * t + offsetX,
+        y: start.y + dy * t + offsetY,
         collected: false,
         flashTimer: 0,
         revealAlpha: 0,
