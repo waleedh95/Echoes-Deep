@@ -2023,9 +2023,9 @@ function buildCeilMesh(cx2d: number, cy2d: number, cellW: number, cellH: number)
   return mesh;
 }
 
-function buildStalactiteMesh(x3d: number, z3d: number, onFloor: boolean, height: number): THREE.Mesh {
-  const r = 0.1 + Math.random() * 0.15;
-  const geo = new THREE.ConeGeometry(r, height, 6, 1);
+function buildStalactiteMesh(x3d: number, z3d: number, onFloor: boolean, height: number, r?: number): THREE.Mesh {
+  const radius = r ?? (0.1 + Math.random() * 0.15);
+  const geo = new THREE.ConeGeometry(radius, height, 6, 1);
   const mat = envMat(0x162636, 0.85);
   const mesh = new THREE.Mesh(geo, mat);
   mesh.position.set(x3d, onFloor ? height / 2 : WALL_H - height / 2, z3d);
@@ -3751,15 +3751,21 @@ class EchoesGame {
     }
 
     // Stalactites / stalagmites — solid lit cones + sonar overlay twin
+    // Seeded so positions and collision rects are deterministic across reloads.
     const stalaCount = Math.floor(def.worldW * def.worldH / 18000);
+    const stalaRng = seededRng(7777 + def.id * 31);
     for (let i = 0; i < stalaCount; i++) {
-      const x3d = (50 + Math.random() * (def.worldW - 100)) * WS;
-      const z3d = (50 + Math.random() * (def.worldH - 100)) * WS;
-      const h = 0.8 + Math.random() * 3;
-      const onFloor = Math.random() > 0.5;
-      const stalaM = buildStalactiteMesh(x3d, z3d, onFloor, h);
+      const x2d = 50 + stalaRng() * (def.worldW - 100);
+      const z2d = 50 + stalaRng() * (def.worldH - 100);
+      const h       = 0.8 + stalaRng() * 3;
+      const r       = 0.1 + stalaRng() * 0.15;  // cone base radius in THREE units
+      const onFloor = stalaRng() > 0.5;
+      const stalaM  = buildStalactiteMesh(x2d * WS, z2d * WS, onFloor, h, r);
       this.sceneGroup.add(stalaM);
       addOverlay(stalaM, "stalactite");
+      // Collision rect — radius in 2D px, generous enough to feel solid
+      const cr = Math.max(10, (r / WS) + 8);
+      def.obstacles.push({ x: x2d - cr, y: z2d - cr, w: cr * 2, h: cr * 2 });
     }
 
     // Bioluminescent point lights scattered throughout (always visible — deep ocean)
@@ -4931,11 +4937,57 @@ class EchoesGame {
     this.pvx *= dragFactor;
     this.pvy *= dragFactor;
 
+    // Single-step reference position — used by hull-damage correction check below
     const nx = this.px + this.pvx * dtS;
     const ny = this.py + this.pvy * dtS;
-    const [rx, ry] = this.collide(nx, ny, PLAYER_SIZE, def.obstacles);
-    this.px = Math.max(PLAYER_SIZE + 2, Math.min(def.worldW - PLAYER_SIZE - 2, rx));
-    this.py = Math.max(PLAYER_SIZE + 2, Math.min(def.worldH - PLAYER_SIZE - 2, ry));
+
+    // ── Sub-stepped movement + solid obstacle collision ──
+    // Split large-displacement frames into sub-steps so boost-speed movement
+    // cannot tunnel through thin geometry in one tick.
+    // Velocity inward component is zeroed on each sub-step hit so the sub
+    // stops dead against solid surfaces while retaining tangential (slide) velocity.
+    const MAX_STEP = PLAYER_SIZE * 0.5;
+    const rawDist  = Math.hypot(this.pvx * dtS, this.pvy * dtS);
+    const hasObs   = def.obstacles.length > 0;
+    const steps    = hasObs ? Math.max(1, Math.min(4, Math.ceil(rawDist / MAX_STEP))) : 1;
+    const subDtS   = dtS / steps;
+
+    // Capture pre-collision velocity so damage severity uses the speed at impact,
+    // not the already-zeroed velocity after wall cancellation.
+    const preVx = this.pvx, preVy = this.pvy;
+
+    for (let s = 0; s < steps; s++) {
+      const stepNx = this.px + this.pvx * subDtS;
+      const stepNy = this.py + this.pvy * subDtS;
+
+      let fx: number, fy: number;
+      if (hasObs) {
+        const [rx, ry] = this.collide(stepNx, stepNy, PLAYER_SIZE, def.obstacles);
+        fx = Math.max(PLAYER_SIZE + 2, Math.min(def.worldW - PLAYER_SIZE - 2, rx));
+        fy = Math.max(PLAYER_SIZE + 2, Math.min(def.worldH - PLAYER_SIZE - 2, ry));
+      } else {
+        fx = Math.max(PLAYER_SIZE + 2, Math.min(def.worldW - PLAYER_SIZE - 2, stepNx));
+        fy = Math.max(PLAYER_SIZE + 2, Math.min(def.worldH - PLAYER_SIZE - 2, stepNy));
+      }
+
+      // Zero the inward velocity component so the sub stops dead against the
+      // surface — tangential velocity is preserved for natural wall-sliding.
+      const scorrX = fx - stepNx;
+      const scorrY = fy - stepNy;
+      const scorrDist = Math.hypot(scorrX, scorrY);
+      if (scorrDist > 0.01) {
+        const normX = scorrX / scorrDist;
+        const normY = scorrY / scorrDist;
+        const inward = this.pvx * normX + this.pvy * normY;
+        if (inward < 0) {
+          this.pvx -= inward * normX;
+          this.pvy -= inward * normY;
+        }
+      }
+
+      this.px = fx;
+      this.py = fy;
+    }
 
     // Full-speed movement emits periodic sound events for Leviathan alerting
     // Engine cut suppresses these emissions entirely — the primary stealth reward for L2
@@ -4955,10 +5007,11 @@ class EchoesGame {
     const corrY = this.py - ny;
     const corrDist = Math.hypot(corrX, corrY);
 
-    if (corrDist > 0.4 && this.hullDamageCooldown <= 0 && !this.transitioning) {
-      // Project velocity onto outward collision normal to get approach speed
+    if (hasObs && corrDist > 0.4 && this.hullDamageCooldown <= 0 && !this.transitioning) {
+      // Use pre-collision velocity so severity reflects the speed at impact
+      // (post-collision pvx/pvy has already had the inward component zeroed).
       const normX = corrX / corrDist, normY = corrY / corrDist;
-      const approachVel = -(this.pvx * normX + this.pvy * normY);
+      const approachVel = -(preVx * normX + preVy * normY);
       const isDirect = approachVel > 90; // px/s — head-on threshold
 
       const damage = isDirect ? 18 + Math.random() * 7 : 5 + Math.random() * 3;
