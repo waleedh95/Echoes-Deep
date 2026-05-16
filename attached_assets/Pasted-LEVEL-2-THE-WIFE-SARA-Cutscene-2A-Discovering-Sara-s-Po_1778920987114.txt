@@ -1,0 +1,91 @@
+LEVEL 2 — THE WIFE (SARA)
+Cutscene 2A: Discovering Sara's Pod
+Visuals: The submarine’s headlights cut through the pitch-black wireframe ocean, illuminating a massive, jagged rock wall. Resting tilted on its side against the stone is a metallic life pod. Inside the pod's viewport, a faint, dying white indicator light flickers erratically.
+
+Interface (HUD): The mechanical docking arm locks into place. The HUD display brings up a bioscan overlay. A facial recognition window appears, but the face inside is aggressively motion-blurred. A stark text label blinks: SURVIVOR ONE.
+
+The Vitals Gauge: The camera pans down to the physical, analog dashboard. The mechanical needle of the vitals monitor rests at the absolute bottom. It does not twitch. Flatline.
+
+Audio: The heavy, metallic CLANG of the docking mechanism locking, followed by the low, continuous hum of the submarine's failing engine. Underneath, a flat, monotonous electronic tone signals the flatline.
+
+Cutscene 2B: The Farewell Message & Break
+Visuals: The camera slowly dollys in close to the pod’s thick glass window. Smear marks from the inside reveal a message written in a dark, rusty red—the distinct texture of dried blood. It reads: "Come home, Eli." The camera holds, locked on the words for 3 seconds.
+
+Audio/Performance: Elias takes a sharp, trembling breath. It catches in his throat, building into a raw, agonizing scream that he desperately tries to swallow down. It cracks, ending in a choked gasp. Simultaneously, a cold, synthesized computerized voice reads over the comms: "Survivor recovered."
+
+Transitions: The screen abruptly cuts to pitch black. One full second of absolute, dead silence.
+
+Cutscene 2C: Memory Flash (Sara)
+Image Generation Prompt:
+
+A realistic, authentic 35mm film photograph of a woman standing at a retro kitchen stove, captured from behind so her back is fully turned to the camera. She is wearing a simple, bright yellow summer dress. Soft steam rises visibly from a stainless steel pot on the stove. At the very right edge of the frame, a toddler's small hand is just peeking into view, reaching up toward her. The lighting is warm, golden, and slightly overexposed, mimicking a candid family photo from a vintage camera. Mild film grain, soft focus, faces completely unseen.
+
+Screen Duration: 4 seconds.
+
+Audio: Ambient kitchen sounds—water bubbling and boiling, a faint sizzle of oil from a pan, and a low-fidelity, tinny AM radio playing a distant melody in an adjacent room.
+
+Transition Out: The photo slowly fades to black. One second of silence. Then, the cold, hum of the wireframe ocean returns.
+
+LEVEL 3 — FIRST SON (NOAH)
+Cutscene 3A: Discovering Noah's Pod
+Visuals: The sub squeezes through a suffocatingly narrow, claustrophobic rock corridor. The headlights reveal Noah’s life pod wedged perfectly upright between two massive boulders, appearing intentionally, carefully placed. The interior light of the pod glows with a dim, steady hum.
+
+Interface (HUD): The docking sequence completes. The HUD facial scan appears, heavily distorted and blurred beyond recognition. The text reads: SURVIVOR TWO.
+
+The Vitals Gauge: The analog needle remains resting at zero. Dead still.
+
+Audio: The mechanical hiss of pneumatic seals locking together. Over the crackling, static-heavy radio comms, a young, fragile teenage voice whispers: "Dad? Is that you?"
+
+Cutscene 3B: The Farewell Message & Break
+Visuals: The camera frames the interior glass of the pod window. Written in the same dark, dried-blood red color are the words: "I got you." The camera remains static, staring at the text.
+
+Audio/Performance: A short, sharp, broken cry escapes Elias—the sound of an emotional snapping point. He gasps for air, whispering in a frantic, trembling stutter: "No... no no no—" before abruptly cutting himself off, trapping the rest of his grief inside. The cold AI ship computer chimes over his shaking voice: "Survivor recovered."
+
+Transitions: The screen cuts to total black. One full second of absolute silence.
+
+Cutscene 3C: Memory Flash (Noah)
+Image Generation Prompt:
+
+A realistic, candid 35mm film photograph of a 16-year-old teenage boy wearing a worn red hoodie, sitting at the edge of a rustic wooden dock. His back and head are turned completely away from the camera, looking out toward the horizon. The vast water in front of him reflects the brilliant, warm gold and orange hues of a deep sunset. The image has a soft vintage texture, slight lens flare, and an authentic, nostalgic atmosphere. No faces visible.
+
+Screen Duration: 4 seconds.
+
+Audio: The gentle, rhythmic lapping of water against old wood, distant seagulls crying out, and the subtle creaking of the dock. Underneath the nature sounds, a teenage boy softly, absentmindedly hums a gentle tune to himself.
+
+Transition Out: Mid-note, the humming abruptly stops. Immediate cut to black. One second of silence before the dark ocean ambient track fades back in.
+
+LEVEL 4 — SECOND CHILD (MIA)
+Cutscene 4A: Discovering Mia's Pod
+Visuals: The deep ocean grid around the submarine is actively glitching—wireframe lines split, flicker, and tear apart into digital fragments. On the flat seabed sits a small, perfectly upright, entirely pristine life pod. It looks hauntingly peaceful.
+
+Interface (HUD): The sub docks. The HUD scanner reveals a small silhouette, the face completely obscured by a heavy digital blur. The text reads: SURVIVOR THREE.
+
+The Vitals Gauge: The analog needle is flatlined.
+
+Audio: The background music of the game—the haunting lullaby melody that has played throughout the journey—slowly transitions. The digital soundtrack stops, and the exact same melody begins playing from inside the pod, sounding like a tinny, mechanical music box fading away.
+
+Cutscene 4B: The Farewell Message & Break
+Visuals: The camera slowly centers on the glass window. Written in shaky, uneven, disproportionate letters—unmistakably the handwriting of a five-year-old—is the final message in dark red: "Dada find me."
+
+Audio/Performance: Elias completely shatters. He unleashes a full, unbridled, raw, and agonizing scream that overloads his mic and echoes violently inside the sub. The scream goes on until his breath runs out, giving way to small, pathetic, quiet sobbing. The computerized ship voice delivers its final, chillingly indifferent line: "Survivor recovered."
+
+Transitions: Cut to black. One full second of silence.
+
+Cutscene 4C: Memory Flash (Mia)
+Image Generation Prompt:
+
+A realistic, nostalgic 35mm color photograph taken from a high angle of a 5-year-old little girl sitting cross-legged on a carpeted living room floor. Her back is entirely to the camera, and her small shoulders are hunched forward in intense concentration. She is surrounded by a messy scatter of colorful wax crayons. She is actively drawing on a large piece of white construction paper, and a crude, bright yellow crayon sun is just barely visible on her page. Warm, soft-focus afternoon sunlight streams into the room. Authentic vintage photo quality.
+
+Screen Duration: 6 seconds.
+
+Audio: The distinct, rhythmic, rhythmic scratch-scratch-scratch sound of a wax crayon moving across heavy paper. No other audio.
+
+Transition Out: The scratching sound suddenly stops. The photo holds for one more second of total silence. Then, a final, incredibly soft, distant music box iteration of the lullaby plays one time.
+
+AFTER LEVEL 4 — THE COLLAPSE
+Final Sequence: The Awakening
+Visuals: The moment the lullaby ends, the game world does not return. Instead, the dark wireframe ocean begins to violently fracture. The green and blue neon lines of the submarine's grid dissolve into digital dust. The crushing blackness of the deep sea begins to bleed into a blinding, sterile white light.
+
+Audio Transition: All environmental audio, sub hums, and sonar pings instantly cease. In their place, a single, rhythmic, mechanical sound takes over the entire audio mix: The slow, rhythmic, synthetic wheeze of a medical ventilator. Inhale... hiss... exhale... click.
+
+The End: The screen fades completely into a pure, overexposed white canvas. The mechanical breathing continues as the game fades to black for the final credits.
