@@ -299,6 +299,7 @@ interface Ping {
   paintedObjects: Set<number>; paintedEnemies: Set<number>; paintedPods: Set<number>;
   screeches: Set<number>;
   nearbyObjs: number[];
+  ghostSpawned?: boolean;  // L3: ensure ghost echoes spawn exactly once per ping
 }
 interface RevealObj {
   lines: THREE.LineSegments; mat: THREE.LineBasicMaterial;
@@ -328,7 +329,7 @@ interface Enemy {
 }
 
 interface SoundEvent {
-  type: "small_ping" | "large_ping" | "collision" | "full_speed" | "flare";
+  type: "small_ping" | "large_ping" | "medium_ping" | "extra_large" | "collision" | "full_speed" | "flare";
   x: number; y: number;
   radius: number;
 }
@@ -336,6 +337,11 @@ interface Lifepod { x: number; y: number; id: string; rescued: boolean; revealTi
 interface NoiseObj { x: number; y: number; id: string; silenced: boolean; noiseRate: number; revealTimer: number }
 interface Flare { x: number; y: number; vy: number; timer: number; pingTimer: number }
 interface DialogueCue { time: number; text: string }
+interface GasPod { x: number; y: number; id: string; triggered: boolean }
+interface SnapBranch { x: number; y: number; id: string; triggered: boolean }
+interface PowerConduit { x: number; y: number; id: number; activated: boolean }
+interface UnstableBuilding { obstacleIdx: number; cx: number; cy: number; collapsed: boolean }
+interface GhostEcho3D { sphere: THREE.Mesh; mat: THREE.MeshBasicMaterial; radius: number; maxR: number; life: number }
 
 interface LevelData {
   id: number; name: string; worldW: number; worldH: number;
@@ -343,8 +349,22 @@ interface LevelData {
   enemyDefs: Array<Omit<Enemy, "state" | "visTimer" | "listenTimer" | "damagedAt">>;
   pods: Lifepod[]; noiseObjs?: NoiseObj[]; o2Start: number; dialogue: DialogueCue[];
   flares?: number;
-  /** Gold letter collectibles spelling a family member's name (Levels I, III, IV only) */
+  /** Gold letter collectibles spelling a family member's name */
   letters?: string[];
+  /** Level 1: exploding gas pod hazards */
+  gasPods?: Array<{ x: number; y: number; id: string }>;
+  /** Level 1: kelp snap-branch noise hazards */
+  snapBranches?: Array<{ x: number; y: number; id: string }>;
+  /** Level 2: index of the bulkhead door obstacle */
+  bulkheadObstacleIdx?: number;
+  /** Level 2: wreck positions for Graveyard Breathes events */
+  wreckPositions?: Vec2[];
+  /** Level 3: interactable power conduit defs */
+  powerConduits?: Array<{ x: number; y: number; id: number }>;
+  /** Level 3: obstacle indices that are city gates (removed when conduits activated) */
+  gateObstacleIdxs?: number[];
+  /** Level 3: obstacle indices that are unstable buildings */
+  unstableObstacleData?: Array<{ obstacleIdx: number; cx: number; cy: number }>;
 }
 interface CutscenePanel { text: string; speaker: string; art: string; badge?: string }
 
@@ -1167,6 +1187,81 @@ class AudioSys {
       try { src.disconnect(); bp.disconnect(); env.disconnect(); } catch { /* already gone */ }
     };
   }
+  gasPodExplosion() {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx; const t0 = ctx.currentTime; const dur = 0.55;
+    const buf = ctx.createBuffer(1, Math.ceil(ctx.sampleRate * dur), ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.08));
+    const src = ctx.createBufferSource(); src.buffer = buf;
+    const hp = ctx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 280;
+    const env = ctx.createGain(); env.gain.setValueAtTime(0.75, t0); env.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+    src.connect(hp); hp.connect(env); env.connect(this.master); src.start(t0); src.stop(t0 + dur);
+    src.onended = () => { try { src.disconnect(); hp.disconnect(); env.disconnect(); } catch { /* gone */ } };
+    const osc = ctx.createOscillator(); osc.type = "sine"; osc.frequency.value = 75;
+    const oscEnv = ctx.createGain(); oscEnv.gain.setValueAtTime(0.55, t0); oscEnv.gain.exponentialRampToValueAtTime(0.001, t0 + 0.35);
+    osc.connect(oscEnv); oscEnv.connect(this.master); osc.start(t0); osc.stop(t0 + 0.4);
+    osc.onended = () => { try { osc.disconnect(); oscEnv.disconnect(); } catch { /* gone */ } };
+  }
+  snapBranchCrack() {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx; const t0 = ctx.currentTime; const dur = 0.16;
+    const buf = ctx.createBuffer(1, Math.ceil(ctx.sampleRate * dur), ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.016));
+    const src = ctx.createBufferSource(); src.buffer = buf;
+    const bp = ctx.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = 1900; bp.Q.value = 1.4;
+    const env = ctx.createGain(); env.gain.setValueAtTime(0.52, t0); env.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+    src.connect(bp); bp.connect(env); env.connect(this.master); src.start(t0); src.stop(t0 + dur);
+    src.onended = () => { try { src.disconnect(); bp.disconnect(); env.disconnect(); } catch { /* gone */ } };
+  }
+  wreckSettle() {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx; const t0 = ctx.currentTime; const dur = 2.2 + Math.random() * 1.2;
+    const centers = [60, 110, 280].map(f => f * (0.85 + Math.random() * 0.3));
+    for (const fc of centers) {
+      const bufLen = Math.ceil(ctx.sampleRate * dur);
+      const noiseBuf = ctx.createBuffer(1, bufLen, ctx.sampleRate);
+      const nd = noiseBuf.getChannelData(0);
+      for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
+      const src = ctx.createBufferSource(); src.buffer = noiseBuf;
+      const bp = ctx.createBiquadFilter(); bp.type = "bandpass"; bp.frequency.value = fc; bp.Q.value = 11 + Math.random() * 7;
+      const env = ctx.createGain(); env.gain.setValueAtTime(0, t0); env.gain.linearRampToValueAtTime(0.32, t0 + dur * 0.3); env.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+      src.connect(bp); bp.connect(env); env.connect(this.master); src.start(t0); src.stop(t0 + dur);
+      src.onended = () => { try { src.disconnect(); bp.disconnect(); env.disconnect(); } catch { /* gone */ } };
+    }
+  }
+  conduitActivate() {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx; const t0 = ctx.currentTime;
+    const osc = ctx.createOscillator(); osc.type = "sawtooth";
+    osc.frequency.setValueAtTime(55, t0); osc.frequency.linearRampToValueAtTime(190, t0 + 0.65);
+    const flt = ctx.createBiquadFilter(); flt.type = "lowpass"; flt.frequency.value = 900;
+    const env = ctx.createGain(); env.gain.setValueAtTime(0, t0); env.gain.linearRampToValueAtTime(0.28, t0 + 0.12); env.gain.exponentialRampToValueAtTime(0.001, t0 + 0.9);
+    osc.connect(flt); flt.connect(env); env.connect(this.master); osc.start(t0); osc.stop(t0 + 0.95);
+    osc.onended = () => { try { osc.disconnect(); flt.disconnect(); env.disconnect(); } catch { /* gone */ } };
+    const click = ctx.createOscillator(); click.type = "square"; click.frequency.value = 440;
+    const cEnv = ctx.createGain(); cEnv.gain.setValueAtTime(0.18, t0 + 0.6); cEnv.gain.exponentialRampToValueAtTime(0.001, t0 + 0.75);
+    click.connect(cEnv); cEnv.connect(this.master); click.start(t0 + 0.6); click.stop(t0 + 0.8);
+    click.onended = () => { try { click.disconnect(); cEnv.disconnect(); } catch { /* gone */ } };
+  }
+  buildingCollapse() {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx; const t0 = ctx.currentTime;
+    const dur = 1.8; const bufLen = Math.ceil(ctx.sampleRate * dur);
+    const buf = ctx.createBuffer(1, bufLen, ctx.sampleRate);
+    const d = buf.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = (Math.random() * 2 - 1) * Math.exp(-i / (ctx.sampleRate * 0.55));
+    const src = ctx.createBufferSource(); src.buffer = buf;
+    const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 420;
+    const env = ctx.createGain(); env.gain.setValueAtTime(0.7, t0); env.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+    src.connect(lp); lp.connect(env); env.connect(this.master); src.start(t0); src.stop(t0 + dur);
+    src.onended = () => { try { src.disconnect(); lp.disconnect(); env.disconnect(); } catch { /* gone */ } };
+    const sub = ctx.createOscillator(); sub.type = "sine"; sub.frequency.value = 48;
+    const subEnv = ctx.createGain(); subEnv.gain.setValueAtTime(0.6, t0); subEnv.gain.exponentialRampToValueAtTime(0.001, t0 + 0.9);
+    sub.connect(subEnv); subEnv.connect(this.master); sub.start(t0); sub.stop(t0 + 1.0);
+    sub.onended = () => { try { sub.disconnect(); subEnv.disconnect(); } catch { /* gone */ } };
+  }
   speak(text: string) {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
     if (typeof SpeechSynthesisUtterance === "undefined") return;
@@ -1490,182 +1585,361 @@ class AudioSys {
 // LEVEL DATA
 // ============================================================
 function level1(): LevelData {
-  // ── CAVE TUNNEL DESIGN ────────────────────────────────────────────────────
-  // Layout: horizontal tunnel y=700→1300 (600 units tall), player at (200,1000).
-  // Pod at (2870, 950) — dead ahead, no walls crossing the corridor.
-  // Ceiling rock mass above y=700, floor rock mass below y=1300.
-  // Stalactites jut from ceiling (no lower than y=780) and
-  // stalagmites from floor (no higher than y=1220) — decorative, never blocking.
+  // ── THE ABYSSAL FOREST ────────────────────────────────────────────────────
+  // Layout: 3800×2200 world. Tunnel y=600–1700 (1100px tall).
+  // Dense kelp columns divide the forest into three zones:
+  //   Zone A (open kelp field, x=350–1750)
+  //   Zone B (canyon choke point, x=1800–2350, ceiling/floor jut inward)
+  //   Zone C (sparser kelp exit, x=2450–3600)
+  // GasPods cluster around the canyon entrance; SnapBranches spread throughout.
+  // Deterministic LCG seeded at a fixed value so the forest has consistent varied geometry
+  let _seed = 9437;
+  const rng = () => { _seed = (_seed * 1664525 + 1013904223) & 0xFFFFFFFF; return (_seed >>> 0) / 0xFFFFFFFF; };
+
+  // Procedural kelp column generator — creates varied width/height/spacing columns
+  const kelpCeil = (xStart: number, xEnd: number, count: number, yTop: number, hMin: number, hMax: number): Rect[] =>
+    Array.from({ length: count }, (_, i) => {
+      const span = (xEnd - xStart) / count;
+      const x = Math.round(xStart + span * i + span * 0.12 + rng() * span * 0.76);
+      const w = Math.round(24 + rng() * 18);
+      const h = Math.round(hMin + rng() * (hMax - hMin));
+      return { x, y: yTop, w, h };
+    });
+
+  const kelpFloor = (xStart: number, xEnd: number, count: number, yBottom: number, hMin: number, hMax: number): Rect[] =>
+    Array.from({ length: count }, (_, i) => {
+      const span = (xEnd - xStart) / count;
+      const x = Math.round(xStart + span * i + span * 0.12 + rng() * span * 0.76);
+      const w = Math.round(24 + rng() * 18);
+      const h = Math.round(hMin + rng() * (hMax - hMin));
+      return { x, y: yBottom - h, w, h };
+    });
+
+  // Zone A ceiling columns (indices 6–15): 10 columns, x=350–1750, drooping from ceiling at y=600
+  const zA_ceil  = kelpCeil(350, 1750, 10, 600,  170, 270);
+  // Zone A floor columns (indices 16–24): 9 columns, x=430–1700, rising from floor (y=1700)
+  const zA_floor = kelpFloor(430, 1700, 9, 1700, 190, 270);
+  // Zone C ceiling columns (indices 29–33): 5 columns, x=2440–3400, sparser/shorter
+  const zC_ceil  = kelpCeil(2440, 3400, 5, 600,  140, 220);
+  // Zone C floor columns (indices 34–38): 5 columns, x=2540–3400
+  const zC_floor = kelpFloor(2540, 3400, 5, 1700, 140, 200);
+
   const obs: Rect[] = [
-    // ── World boundary ───────────────────────────────────────────────────
-    { x: 0, y: 0, w: 3200, h: 55 },
-    { x: 0, y: 1945, w: 3200, h: 55 },
-    { x: 0, y: 55, w: 55, h: 1890 },
-    { x: 3145, y: 55, w: 55, h: 1890 },
-
-    // ── Cave ceiling — solid rock above the tunnel ────────────────────────
-    { x: 55, y: 55, w: 3090, h: 645 },   // ceiling → tunnel top opens at y=700
-
-    // ── Cave floor — solid rock below the tunnel ──────────────────────────
-    { x: 55, y: 1300, w: 3090, h: 645 }, // floor → tunnel bottom at y=1300
-
-    // ── Ceiling stalactites — decorative protrusions (max depth y=780) ────
-    { x: 280,  y: 700, w: 90,  h: 65 },
-    { x: 560,  y: 700, w: 70,  h: 75 },
-    { x: 860,  y: 700, w: 95,  h: 60 },
-    { x: 1140, y: 700, w: 80,  h: 70 },
-    { x: 1440, y: 700, w: 100, h: 65 },
-    { x: 1740, y: 700, w: 85,  h: 72 },
-    { x: 2040, y: 700, w: 90,  h: 60 },
-    { x: 2340, y: 700, w: 75,  h: 68 },
-    { x: 2620, y: 700, w: 88,  h: 65 },
-
-    // ── Floor stalagmites — decorative protrusions (min height y=1220) ────
-    { x: 160,  y: 1235, w: 80,  h: 65 },
-    { x: 450,  y: 1235, w: 90,  h: 65 },
-    { x: 740,  y: 1235, w: 75,  h: 65 },
-    { x: 1020, y: 1235, w: 85,  h: 65 },
-    { x: 1310, y: 1235, w: 80,  h: 65 },
-    { x: 1600, y: 1235, w: 90,  h: 65 },
-    { x: 1880, y: 1235, w: 78,  h: 65 },
-    { x: 2160, y: 1235, w: 85,  h: 65 },
-    { x: 2450, y: 1235, w: 80,  h: 65 },
-    { x: 2720, y: 1235, w: 75,  h: 65 },
-
-    // ── Pod chamber — very gentle narrowing near the end ─────────────────
-    { x: 2760, y: 700, w: 440, h: 70 },  // ceiling juts lower near pod
-    { x: 2760, y: 1230, w: 440, h: 70 }, // floor juts higher near pod
+    // ── World boundary ─────────────────────────────────────────────────────
+    { x: 0,    y: 0,    w: 3800, h: 55   }, // 0 top
+    { x: 0,    y: 2145, w: 3800, h: 55   }, // 1 bottom
+    { x: 0,    y: 55,   w: 55,   h: 2090 }, // 2 left
+    { x: 3745, y: 55,   w: 55,   h: 2090 }, // 3 right
+    // ── Ceiling rock — solid above y=600 ──────────────────────────────────
+    { x: 55,   y: 55,   w: 3690, h: 545  }, // 4
+    // ── Floor rock — solid below y=1700 ───────────────────────────────────
+    { x: 55,   y: 1700, w: 3690, h: 445  }, // 5
+    // ── Zone A: procedural ceiling kelp columns (indices 6–15) ────────────
+    ...zA_ceil,
+    // ── Zone A: procedural floor kelp columns (indices 16–24) ─────────────
+    ...zA_floor,
+    // ── Zone B: canyon choke — ceiling and floor jut inward ───────────────
+    { x: 1800, y: 600,  w: 550,  h: 265  }, // 25 ceiling drops → opens at y=865
+    { x: 1800, y: 1490, w: 550,  h: 210  }, // 26 floor rises → closes at y=1490
+    // Secondary narrowing (rock outcrops)
+    { x: 1980, y: 865,  w: 120,  h: 90   }, // 27 ceiling outcrop
+    { x: 1980, y: 1400, w: 120,  h: 90   }, // 28 floor outcrop
+    // ── Zone C: procedural sparser kelp columns (ceiling 29–33, floor 34–38)
+    ...zC_ceil,
+    ...zC_floor,
+    // ── Pod approach — gentle narrowing ───────────────────────────────────
+    { x: 3580, y: 600,  w: 165,  h: 100  }, // 39
+    { x: 3580, y: 1610, w: 165,  h: 90   }, // 40
   ];
   return {
-    id: 1, name: "LEVEL I — THE WIFE", worldW: 3200, worldH: 2000,
-    playerStart: { x: 200, y: 1000 },
+    id: 1, name: "LEVEL I — THE ABYSSAL FOREST", worldW: 3800, worldH: 2200,
+    playerStart: { x: 200, y: 1150 },
     obstacles: obs,
-    enemyDefs: [{
-      x: 1400, y: 950, type: "drifter",
-      // All waypoints are in the tunnel corridor (y=800–1200)
-      waypoints: [
-        { x: 600,  y: 950  },
-        { x: 1100, y: 820  },
-        { x: 1700, y: 1060 },
-        { x: 2300, y: 900  },
-        { x: 1900, y: 1150 },
-        { x: 1000, y: 1020 },
-      ],
-      wpIdx: 0, speed: 26, hitR: 38,
-      hearingDist: 680, alertDist: 500,
-    }],
-    pods: [{ x: 2870, y: 950, id: "sara", rescued: false, revealTimer: 0, character: "SARA", commsLine: '"...Come home, Eli."' }],
+    gasPods: [
+      { x: 1870, y: 950,  id: "gp1" },
+      { x: 2000, y: 1040, id: "gp2" },
+      { x: 2110, y: 970,  id: "gp3" },
+      { x: 2180, y: 1380, id: "gp4" },
+      { x: 2080, y: 1300, id: "gp5" },
+    ],
+    snapBranches: [
+      { x: 540,  y: 790,  id: "sb1"  },
+      { x: 710,  y: 800,  id: "sb2"  },
+      { x: 930,  y: 810,  id: "sb3"  },
+      { x: 1190, y: 785,  id: "sb4"  },
+      { x: 1450, y: 795,  id: "sb5"  },
+      { x: 640,  y: 1510, id: "sb6"  },
+      { x: 870,  y: 1500, id: "sb7"  },
+      { x: 2600, y: 775,  id: "sb8"  },
+      { x: 2900, y: 790,  id: "sb9"  },
+      { x: 3200, y: 770,  id: "sb10" },
+    ],
+    enemyDefs: [
+      {
+        // Drifter 1: Zone A → choke corridor (~x1800-2200) → back.
+        // Extended into the choke so both Drifters pressure the player simultaneously.
+        x: 800, y: 1010, type: "drifter",
+        waypoints: [
+          { x: 350,  y: 900  }, { x: 700,  y: 790  }, { x: 1000, y: 1050 },
+          { x: 1300, y: 910  }, { x: 1700, y: 1000 }, { x: 2000, y: 1100 },
+          { x: 2200, y: 950  }, { x: 1800, y: 1180 }, { x: 1400, y: 1200 }, { x: 800, y: 1120 },
+        ],
+        wpIdx: 0, speed: 28, hitR: 38, hearingDist: 700, alertDist: 500,
+      },
+      {
+        // Drifter 2: Zone C → choke corridor (~x1800-2400) → back.
+        // Extended into the choke from the right so both overlap in the narrows.
+        x: 2800, y: 1160, type: "drifter",
+        waypoints: [
+          { x: 3300, y: 1110 }, { x: 3000, y: 1010 }, { x: 2700, y: 910  },
+          { x: 2400, y: 1000 }, { x: 2100, y: 1080 }, { x: 1900, y: 950  },
+          { x: 2200, y: 1260 }, { x: 2600, y: 1310 }, { x: 3100, y: 1200 },
+        ],
+        wpIdx: 0, speed: 30, hitR: 38, hearingDist: 720, alertDist: 520,
+      },
+    ],
+    pods: [{ x: 3660, y: 1150, id: "sara", rescued: false, revealTimer: 0, character: "SARA", commsLine: '"...Come home, Eli."' }],
     letters: ["S","A","R","A"],
     o2Start: 100,
     dialogue: [
-      { time: 1.5,  text: "WASD to navigate. Click to ping sonar. Hold 1 second for LARGE PING — reveals the whole cave." },
-      { time: 8,    text: 'Elias: "Descending into the wreck site. She has to be here."' },
-      { time: 22,   text: 'Elias: "Oxygen nominal. Keep acoustic signature low — it can hear you."' },
-      { time: 45,   text: 'Elias: "Pod signal detected. Bearing 0-8-5. Heading east along the tunnel."' },
-      { time: 70,   text: 'Elias: "Sara... I\'m coming. I should have been faster."' },
+      { time: 1.5, text: "WASD to navigate. Click to ping sonar. Hold 1 second for LARGE PING — reveals the whole cave." },
+      { time: 8,   text: 'Elias: "The kelp columns… like a cathedral in stone. I\'ve never seen anything grow this deep."' },
+      { time: 22,  text: 'Elias: "Something is watching from between the columns. Move slowly. The silence here is wrong."' },
+      { time: 45,  text: 'Elias: "Gas pockets ahead. One wrong move and the whole canyon will hear me."' },
+      { time: 70,  text: 'Elias: "Sara\'s signal. Not far now. I just have to get through."' },
+      { time: 95,  text: 'Elias: "The bioluminescence… it pulses with every sound. The whole forest is listening."' },
     ],
   };
 }
 function level2(): LevelData {
+  // ── THE IRON GRAVEYARD ────────────────────────────────────────────────────
+  // Layout: 3600×2200 world. Approach corridor y=200–1700.
+  // Shipwreck structures litter the seafloor. The main gauntlet is a sealed
+  // submarine corridor (x=1400–2300) that the player must traverse.
+  // A Stalker patrols the corridor interior; a bulkhead (obs[25]) blocks
+  // the exit. The door only opens when the stalker is drawn 450px away.
   const obs: Rect[] = [
-    { x: 0, y: 0, w: 1800, h: 55 }, { x: 0, y: 1345, w: 1800, h: 55 },
-    { x: 0, y: 55, w: 55, h: 1290 }, { x: 1745, y: 55, w: 55, h: 1290 },
-    { x: 55, y: 55, w: 55, h: 420 }, { x: 55, y: 580, w: 55, h: 380 }, { x: 55, y: 1060, w: 55, h: 285 },
-    { x: 320, y: 55, w: 45, h: 280 }, { x: 320, y: 480, w: 45, h: 360 }, { x: 320, y: 1020, w: 45, h: 325 },
-    { x: 600, y: 55, w: 45, h: 220 }, { x: 600, y: 460, w: 45, h: 420 }, { x: 600, y: 1080, w: 45, h: 265 },
-    { x: 880, y: 55, w: 45, h: 340 }, { x: 880, y: 600, w: 45, h: 300 }, { x: 880, y: 1100, w: 45, h: 245 },
-    { x: 1160, y: 55, w: 45, h: 240 }, { x: 1160, y: 480, w: 45, h: 420 }, { x: 1160, y: 1080, w: 45, h: 265 },
-    { x: 1440, y: 55, w: 45, h: 310 }, { x: 1440, y: 560, w: 45, h: 340 }, { x: 1440, y: 1100, w: 45, h: 245 },
-    { x: 110, y: 440, w: 165, h: 38 }, { x: 110, y: 840, w: 165, h: 38 },
-    { x: 375, y: 290, w: 180, h: 38 }, { x: 375, y: 940, w: 180, h: 38 },
-    { x: 655, y: 380, w: 180, h: 38 }, { x: 655, y: 1020, w: 180, h: 38 },
-    { x: 935, y: 440, w: 180, h: 38 }, { x: 935, y: 900, w: 180, h: 38 },
-    { x: 1215, y: 340, w: 180, h: 38 }, { x: 1215, y: 960, w: 180, h: 38 },
-    { x: 1495, y: 400, w: 200, h: 38 }, { x: 1495, y: 880, w: 200, h: 38 },
-    { x: 750, y: 580, w: 30, h: 30 }, { x: 1050, y: 700, w: 25, h: 35 },
+    // ── World boundary ─────────────────────────────────────────────────────
+    { x: 0,    y: 0,    w: 3600, h: 55   }, // 0
+    { x: 0,    y: 2145, w: 3600, h: 55   }, // 1
+    { x: 0,    y: 55,   w: 55,   h: 2090 }, // 2
+    { x: 3545, y: 55,   w: 55,   h: 2090 }, // 3
+    // ── Deep trench ────────────────────────────────────────────────────────
+    { x: 55,   y: 1750, w: 3490, h: 395  }, // 4
+    // ── Ceiling plate ──────────────────────────────────────────────────────
+    { x: 55,   y: 55,   w: 3490, h: 145  }, // 5
+    // ── Tanker hull section 1 ──────────────────────────────────────────────
+    { x: 300,  y: 700,  w: 700,  h: 40   }, // 6 upper hull plate
+    { x: 300,  y: 900,  w: 700,  h: 40   }, // 7 lower hull plate
+    { x: 300,  y: 740,  w: 40,   h: 160  }, // 8 fore bulkhead
+    { x: 960,  y: 740,  w: 40,   h: 160  }, // 9 aft bulkhead
+    // ── Propeller blade cluster ────────────────────────────────────────────
+    { x: 100,  y: 1200, w: 180,  h: 22   }, // 10
+    { x: 100,  y: 1300, w: 180,  h: 22   }, // 11
+    { x: 180,  y: 1200, w: 22,   h: 120  }, // 12
+    // ── Torpedo tube cluster ───────────────────────────────────────────────
+    { x: 1100, y: 350,  w: 200,  h: 30   }, // 13
+    { x: 1200, y: 380,  w: 200,  h: 25   }, // 14
+    { x: 1100, y: 410,  w: 200,  h: 25   }, // 15
+    // ── Main submarine wreck — gauntlet corridor ───────────────────────────
+    { x: 1400, y: 500,  w: 900,  h: 35   }, // 16 top hull plate
+    { x: 1400, y: 900,  w: 900,  h: 35   }, // 17 bottom hull plate
+    { x: 1400, y: 535,  w: 35,   h: 365  }, // 18 fore bulkhead (entrance open above/below)
+    // Interior bulkheads creating cover positions
+    { x: 1650, y: 535,  w: 30,   h: 110  }, // 19 bulkhead A top
+    { x: 1650, y: 760,  w: 30,   h: 140  }, // 20 bulkhead A bot
+    { x: 1900, y: 535,  w: 30,   h: 130  }, // 21 bulkhead B top
+    { x: 1900, y: 780,  w: 30,   h: 120  }, // 22 bulkhead B bot
+    { x: 2100, y: 535,  w: 30,   h: 120  }, // 23 bulkhead C top
+    { x: 2100, y: 770,  w: 30,   h: 130  }, // 24 bulkhead C bot
+    // ── AFT BULKHEAD DOOR (idx=25) — blocks pod access ─────────────────────
+    { x: 2300, y: 535,  w: 35,   h: 365  }, // 25 AFT BULKHEAD
+    // ── Scattered wreck debris ─────────────────────────────────────────────
+    { x: 700,  y: 1200, w: 260,  h: 30   }, // 26
+    { x: 800,  y: 1100, w: 30,   h: 130  }, // 27
+    { x: 1050, y: 1100, w: 200,  h: 30   }, // 28
+    { x: 1050, y: 1130, w: 30,   h: 120  }, // 29
+    // ── Girder cluster mid ─────────────────────────────────────────────────
+    { x: 2400, y: 300,  w: 300,  h: 22   }, // 30
+    { x: 2600, y: 200,  w: 22,   h: 200  }, // 31
+    { x: 2700, y: 350,  w: 250,  h: 22   }, // 32
+    // ── Stern section of second wreck ─────────────────────────────────────
+    { x: 2800, y: 700,  w: 550,  h: 35   }, // 33
+    { x: 2800, y: 1000, w: 550,  h: 35   }, // 34
+    { x: 2800, y: 735,  w: 35,   h: 265  }, // 35
+    { x: 3315, y: 735,  w: 35,   h: 265  }, // 36
+    { x: 3000, y: 735,  w: 30,   h: 100  }, // 37
+    { x: 3000, y: 900,  w: 30,   h: 100  }, // 38
+    // ── Scattered hull plating ─────────────────────────────────────────────
+    { x: 400,  y: 1450, w: 180,  h: 22   }, // 39
+    { x: 550,  y: 1350, w: 22,   h: 120  }, // 40
+    { x: 1600, y: 1300, w: 200,  h: 25   }, // 41
+    { x: 2100, y: 1100, w: 250,  h: 22   }, // 42
+    { x: 2500, y: 1400, w: 180,  h: 22   }, // 43
   ];
   return {
-    id: 2, name: "LEVEL III — FIRST SON", worldW: 1800, worldH: 1400,
-    playerStart: { x: 130, y: 700 },
+    id: 2, name: "LEVEL II — THE IRON GRAVEYARD", worldW: 3600, worldH: 2200,
+    playerStart: { x: 200, y: 1100 },
     obstacles: obs,
+    bulkheadObstacleIdx: 25,
+    wreckPositions: [
+      { x: 500,  y: 820 }, { x: 800,  y: 1150 }, { x: 1200, y: 380 },
+      { x: 1700, y: 720 }, { x: 1950, y: 720 },  { x: 2050, y: 500 },
+      { x: 2900, y: 870 }, { x: 3100, y: 870 },  { x: 2700, y: 370 },
+    ],
     enemyDefs: [
-      // Entrance corridor guard — wide alert, punishes pings near entry
-      { x: 440, y: 350, type: "stalker", waypoints: [{ x: 110, y: 200 }, { x: 550, y: 200 }, { x: 550, y: 580 }, { x: 110, y: 580 }], wpIdx: 0, speed: 58, hitR: 26, hearingDist: 760, alertDist: 560 },
-      // Pod guard — tighter radius, faster; requires silencing noise objects first
-      { x: 1300, y: 900, type: "stalker", waypoints: [{ x: 1100, y: 700 }, { x: 1550, y: 700 }, { x: 1550, y: 1100 }, { x: 1100, y: 1100 }], wpIdx: 0, speed: 64, hitR: 26, hearingDist: 680, alertDist: 480 },
-      // Mid-corridor Leviathan — 4-state hunt AI; slower and less perceptive than Level 3's for progressive difficulty
-      { x: 1020, y: 700, type: "leviathan",
+      // Entry corridor stalker — guards the approach wreckage
+      {
+        x: 900, y: 800, type: "stalker",
+        waypoints: [{ x: 400, y: 800 }, { x: 900, y: 800 }, { x: 800, y: 600 }, { x: 400, y: 600 }],
+        wpIdx: 0, speed: 55, hitR: 26, hearingDist: 760, alertDist: 560,
+      },
+      // Gauntlet stalker (idx=1) — patrols inside the main sub corridor
+      {
+        x: 1700, y: 720, type: "stalker",
         waypoints: [
-          { x: 660,  y: 700  },
-          { x: 1020, y: 180  },
-          { x: 1300, y: 700  },
-          { x: 1020, y: 1200 },
+          { x: 1500, y: 720 }, { x: 2000, y: 720 },
+          { x: 2200, y: 720 }, { x: 2000, y: 720 }, { x: 1500, y: 720 },
         ],
-        wpIdx: 0, speed: 42, hitR: 42, hearingDist: 780, alertDist: 580 },
+        wpIdx: 0, speed: 48, hitR: 26, hearingDist: 680, alertDist: 480,
+      },
     ],
-    pods: [{ x: 1650, y: 1180, id: "noah", rescued: false, revealTimer: 0, character: "NOAH", commsLine: '"Dad? Is that you?"' }],
+    pods: [{ x: 3400, y: 860, id: "noah", rescued: false, revealTimer: 0, character: "NOAH", commsLine: '"Dad? Is that you?"' }],
     letters: ["N","O","A","H"],
-    noiseObjs: [
-      { x: 1120, y: 720, id: "n1", silenced: false, noiseRate: 8, revealTimer: 0 },
-      { x: 1200, y: 820, id: "n2", silenced: false, noiseRate: 7, revealTimer: 0 },
-      { x: 1150, y: 920, id: "n3", silenced: false, noiseRate: 9, revealTimer: 0 },
-    ],
     o2Start: 100,
     dialogue: [
-      { time: 3, text: 'Elias: "Pressure increasing. Tight passages ahead."' },
-      { time: 40, text: 'Elias: "Debris field. Noise sources blocking the dock. Silencing them."' },
+      { time: 3,  text: 'Elias: "Ship graveyard. These wrecks could have been anything — tankers, warships, submarines."' },
+      { time: 18, text: 'Elias: "Something is alive in the main wreck. I can hear its echoes before I can see it."' },
+      { time: 35, text: 'Elias: "The wreck breathes. Metal settles. Creaks and groans I can\'t predict. I need to move between them."' },
+      { time: 55, text: 'Elias: "Cut the engine. Let the stalker pass. If I use the flare now, it moves away — and the door opens."' },
+      { time: 80, text: 'Elias: "Noah\'s signal. On the far side. Almost there."' },
     ],
+    flares: 2,
   };
 }
 function level3(): LevelData {
+  // ── THE DROWNED METROPOLIS ────────────────────────────────────────────────
+  // Layout: 3800×2600 world. Tunnel y=400–2200 (1800px tall).
+  // Submerged skyscrapers line both sides of the main avenue. Two power
+  // conduits hidden off-path must both be activated to open the city gates
+  // (obs[19] and obs[36]) that seal the final approach.
+  // Three unstable buildings will collapse when struck by a large ping or
+  // direct impact, generating massive noise events.
   const obs: Rect[] = [
-    { x: 0, y: 0, w: 2500, h: 55 }, { x: 0, y: 1945, w: 2500, h: 55 },
-    { x: 0, y: 55, w: 55, h: 1890 }, { x: 2445, y: 55, w: 55, h: 1890 },
-    { x: 380, y: 55, w: 70, h: 380 }, { x: 380, y: 620, w: 70, h: 460 }, { x: 380, y: 1280, w: 70, h: 665 },
-    { x: 760, y: 55, w: 70, h: 280 }, { x: 760, y: 560, w: 70, h: 540 }, { x: 760, y: 1380, w: 70, h: 565 },
-    { x: 1140, y: 55, w: 70, h: 420 }, { x: 1140, y: 700, w: 70, h: 480 }, { x: 1140, y: 1430, w: 70, h: 515 },
-    { x: 1520, y: 55, w: 70, h: 300 }, { x: 1520, y: 580, w: 70, h: 560 }, { x: 1520, y: 1400, w: 70, h: 545 },
-    { x: 1900, y: 55, w: 70, h: 440 }, { x: 1900, y: 760, w: 70, h: 420 }, { x: 1900, y: 1440, w: 70, h: 505 },
-    { x: 55, y: 400, w: 280, h: 38 }, { x: 55, y: 900, w: 280, h: 38 }, { x: 55, y: 1380, w: 280, h: 38 },
-    { x: 450, y: 260, w: 260, h: 38 }, { x: 450, y: 760, w: 260, h: 38 }, { x: 450, y: 1200, w: 260, h: 38 },
-    { x: 830, y: 380, w: 260, h: 38 }, { x: 830, y: 900, w: 260, h: 38 }, { x: 830, y: 1480, w: 260, h: 38 },
-    { x: 1210, y: 280, w: 260, h: 38 }, { x: 1210, y: 820, w: 260, h: 38 }, { x: 1210, y: 1360, w: 260, h: 38 },
-    { x: 1590, y: 400, w: 260, h: 38 }, { x: 1590, y: 960, w: 260, h: 38 },
-    { x: 1970, y: 320, w: 260, h: 38 }, { x: 1970, y: 880, w: 260, h: 38 }, { x: 1970, y: 1420, w: 260, h: 38 },
-    { x: 2230, y: 55, w: 55, h: 660 }, { x: 2230, y: 1100, w: 55, h: 845 },
-    { x: 580, y: 1500, w: 30, h: 30 }, { x: 1020, y: 850, w: 28, h: 32 }, { x: 1760, y: 1200, w: 32, h: 28 },
+    // ── World boundary ─────────────────────────────────────────────────────
+    { x: 0,    y: 0,    w: 3800, h: 55   }, // 0
+    { x: 0,    y: 2545, w: 3800, h: 55   }, // 1
+    { x: 0,    y: 55,   w: 55,   h: 2490 }, // 2
+    { x: 3745, y: 55,   w: 55,   h: 2490 }, // 3
+    // ── Upper rock mass (y=55–400) ─────────────────────────────────────────
+    { x: 55,   y: 55,   w: 3690, h: 345  }, // 4
+    // ── Lower rock mass (y=2200–2545) ──────────────────────────────────────
+    { x: 55,   y: 2200, w: 3690, h: 345  }, // 5
+    // ── Left district skyscrapers (x=300–800) ─────────────────────────────
+    { x: 300,  y: 400,  w: 80,   h: 600  }, // 6  tower A1 (top face)
+    { x: 500,  y: 400,  w: 80,   h: 500  }, // 7  tower A2
+    { x: 700,  y: 400,  w: 80,   h: 550  }, // 8  tower A3
+    { x: 300,  y: 1600, w: 480,  h: 50   }, // 9  plaza floor
+    { x: 300,  y: 1800, w: 80,   h: 400  }, // 10 tower A4 (base)
+    { x: 500,  y: 1750, w: 80,   h: 450  }, // 11 tower A5
+    { x: 700,  y: 1700, w: 80,   h: 500  }, // 12 tower A6
+    // Interior braces
+    { x: 380,  y: 900,  w: 120,  h: 30   }, // 13
+    { x: 380,  y: 1400, w: 120,  h: 30   }, // 14
+    { x: 620,  y: 800,  w: 80,   h: 30   }, // 15
+    { x: 620,  y: 1500, w: 80,   h: 30   }, // 16
+    // ── GATE 1 supports and door ───────────────────────────────────────────
+    { x: 1400, y: 400,  w: 55,   h: 300  }, // 17 gate 1 support top
+    { x: 1400, y: 1900, w: 55,   h: 300  }, // 18 gate 1 support bot
+    { x: 1400, y: 700,  w: 55,   h: 1200 }, // 19 ← GATE 1 DOOR (idx=19)
+    // ── Mid-left cluster B (x=1000–1300) ──────────────────────────────────
+    { x: 1000, y: 400,  w: 90,   h: 520  }, // 20 tower B1
+    { x: 1150, y: 400,  w: 90,   h: 480  }, // 21 UNSTABLE TOWER (idx=21, cx=1195,cy=640)
+    { x: 1000, y: 1680, w: 90,   h: 520  }, // 22 tower B3
+    { x: 1150, y: 1720, w: 90,   h: 480  }, // 23 tower B4
+    { x: 1050, y: 1100, w: 200,  h: 35   }, // 24 cross-brace
+    // Street debris
+    { x: 900,  y: 950,  w: 180,  h: 25   }, // 25
+    { x: 900,  y: 1450, w: 180,  h: 25   }, // 26
+    // ── Mid-right cluster C (x=1700–2200) ─────────────────────────────────
+    { x: 1700, y: 400,  w: 85,   h: 550  }, // 27 tower C1
+    { x: 1900, y: 400,  w: 85,   h: 500  }, // 28 UNSTABLE TOWER (idx=28, cx=1942,cy=650)
+    { x: 2100, y: 400,  w: 85,   h: 580  }, // 29 tower C3
+    { x: 1700, y: 1700, w: 85,   h: 500  }, // 30
+    { x: 1900, y: 1720, w: 85,   h: 480  }, // 31
+    { x: 2100, y: 1650, w: 85,   h: 550  }, // 32
+    { x: 1750, y: 1100, w: 250,  h: 30   }, // 33 cross-brace
+    // ── GATE 2 supports and door ───────────────────────────────────────────
+    { x: 2600, y: 400,  w: 55,   h: 300  }, // 34 gate 2 support top
+    { x: 2600, y: 1900, w: 55,   h: 300  }, // 35 gate 2 support bot
+    { x: 2600, y: 700,  w: 55,   h: 1200 }, // 36 ← GATE 2 DOOR (idx=36)
+    // ── Right district cluster D (x=2800–3500) ─────────────────────────────
+    { x: 2800, y: 400,  w: 85,   h: 520  }, // 37 tower D1
+    { x: 2950, y: 400,  w: 85,   h: 480  }, // 38 UNSTABLE TOWER (idx=38, cx=2992,cy=640)
+    { x: 3100, y: 400,  w: 85,   h: 550  }, // 39 tower D3
+    { x: 3300, y: 400,  w: 85,   h: 500  }, // 40 tower D4
+    { x: 2800, y: 1700, w: 85,   h: 500  }, // 41
+    { x: 2950, y: 1720, w: 85,   h: 480  }, // 42
+    { x: 3100, y: 1680, w: 85,   h: 520  }, // 43
+    { x: 3300, y: 1700, w: 85,   h: 500  }, // 44
+    // ── Basement corridor walls ────────────────────────────────────────────
+    { x: 700,  y: 2100, w: 200,  h: 30   }, // 45
+    { x: 1400, y: 2050, w: 200,  h: 30   }, // 46
+    { x: 2200, y: 2080, w: 200,  h: 30   }, // 47
+    // ── Upper access corridor walls ────────────────────────────────────────
+    { x: 600,  y: 500,  w: 200,  h: 30   }, // 48
+    { x: 1200, y: 550,  w: 200,  h: 30   }, // 49
+    // ── Pod chamber narrowing ──────────────────────────────────────────────
+    { x: 3600, y: 400,  w: 145,  h: 200  }, // 50
+    { x: 3600, y: 2000, w: 145,  h: 200  }, // 51
   ];
   return {
-    id: 3, name: "LEVEL IV — SECOND CHILD", worldW: 2500, worldH: 2000,
-    playerStart: { x: 180, y: 1000 },
+    id: 3, name: "LEVEL III — THE DROWNED METROPOLIS", worldW: 3800, worldH: 2600,
+    playerStart: { x: 200, y: 1300 },
     obstacles: obs,
-    enemyDefs: [
-      // Entrance zone — standard awareness, loose patrol
-      { x: 700, y: 500, type: "stalker",
-        waypoints: [{ x: 200, y: 300 }, { x: 900, y: 300 }, { x: 900, y: 700 }, { x: 200, y: 700 }],
-        wpIdx: 0, speed: 52, hitR: 26, hearingDist: 700, alertDist: 500 },
-      // Mid-level roamer — elevated awareness, faster response
-      { x: 1400, y: 900, type: "stalker",
-        waypoints: [{ x: 900, y: 700 }, { x: 1800, y: 700 }, { x: 1800, y: 1200 }, { x: 900, y: 1200 }],
-        wpIdx: 0, speed: 60, hitR: 26, hearingDist: 760, alertDist: 560 },
-      // Pod guardian — hyper-sensitive, orbits Mia's pod area
-      { x: 1900, y: 1500, type: "stalker",
-        waypoints: [{ x: 1600, y: 1200 }, { x: 2200, y: 1200 }, { x: 2200, y: 1800 }, { x: 1600, y: 1800 }],
-        wpIdx: 0, speed: 56, hitR: 26, hearingDist: 860, alertDist: 660 },
-      // Deep-zone Leviathan — 4-state hunt AI, patrols the entire mid and deep sectors
-      { x: 1600, y: 1000, type: "leviathan",
-        waypoints: [{ x: 900, y: 500 }, { x: 2150, y: 400 }, { x: 2200, y: 1500 }, { x: 1200, y: 1750 }, { x: 300, y: 1000 }],
-        wpIdx: 0, speed: 55, hitR: 42, hearingDist: 920, alertDist: 720 },
+    powerConduits: [
+      { x: 750, y: 1050, id: 0 },  // left district alley — opens inner-gate; reachable from spawn
+      { x: 2100, y: 1650, id: 1 }, // mid district alley — opens outer-gate; reachable after gate 1
     ],
-    pods: [{ x: 1250, y: 1700, id: "mia", rescued: false, revealTimer: 0, character: "MIA", commsLine: '"I Will Miss You Dad."' }],
+    gateObstacleIdxs: [19, 36],
+    unstableObstacleData: [
+      { obstacleIdx: 21, cx: 1195, cy: 640 },
+      { obstacleIdx: 28, cx: 1942, cy: 650 },
+      { obstacleIdx: 38, cx: 2992, cy: 640 },
+    ],
+    enemyDefs: [
+      // Left district patrol
+      {
+        x: 700, y: 1000, type: "stalker",
+        waypoints: [{ x: 350, y: 900 }, { x: 1300, y: 900 }, { x: 1300, y: 1500 }, { x: 350, y: 1500 }],
+        wpIdx: 0, speed: 52, hitR: 26, hearingDist: 700, alertDist: 500,
+      },
+      // Right district patrol
+      {
+        x: 3100, y: 1200, type: "stalker",
+        waypoints: [{ x: 2700, y: 900 }, { x: 3600, y: 900 }, { x: 3600, y: 1800 }, { x: 2700, y: 1800 }],
+        wpIdx: 0, speed: 58, hitR: 26, hearingDist: 750, alertDist: 550,
+      },
+      // City-wide Leviathan
+      {
+        x: 1900, y: 1300, type: "leviathan",
+        waypoints: [
+          { x: 500,  y: 800  }, { x: 1900, y: 500  }, { x: 3500, y: 800  },
+          { x: 3500, y: 1800 }, { x: 1900, y: 2100 }, { x: 500,  y: 1800 },
+        ],
+        wpIdx: 0, speed: 52, hitR: 42, hearingDist: 900, alertDist: 700,
+      },
+    ],
+    pods: [{ x: 3640, y: 1300, id: "mia", rescued: false, revealTimer: 0, character: "MIA", commsLine: '"I Will Miss You Dad."' }],
     letters: ["M","I","A"],
     o2Start: 60, flares: 2,
     dialogue: [
-      { time: 2, text: 'Elias: "Deepest sector. Oxygen at sixty percent. She\'s here somewhere."' },
-      { time: 14, text: 'Elias: "I can hear... something. A melody."' },
-      { time: 28, text: 'Elias: "Mia used to hum that. When she couldn\'t sleep."' },
-      { time: 50, text: 'Elias: "Multiple contacts. Moving slow. Keep the noise down."' },
-      { time: 80, text: 'Elias: "Pod signal. It\'s her. She\'s been waiting."' },
+      { time: 2,  text: 'Elias: "A city. Submerged whole. Streets and towers still standing — like time stopped underwater."' },
+      { time: 14, text: 'Elias: "I can hear… something. A melody. It\'s coming from deeper in."' },
+      { time: 28, text: 'Elias: "Mia used to hum that. When she couldn\'t sleep. God."' },
+      { time: 45, text: 'Elias: "The buildings are unstable. A loud ping could bring one down — and every creature here would hear it."' },
+      { time: 65, text: 'Elias: "Power conduit — off the main avenue. Activating it should open the inner gate. Another must lie deeper."' },
+      { time: 90, text: 'Elias: "Pod signal. It\'s her. She\'s been waiting for me."' },
     ],
   };
 }
@@ -2388,6 +2662,97 @@ function makeAnimatedHeadlightCookie(): AnimatedCookie {
   return { texture: tex, update: draw };
 }
 
+// ── Level-specific prop builders ─────────────────────────────────────────────
+
+/** Tall kelp tree growing upward from y=0. Call with a seeded rng for determinism. */
+function buildKelpTree(rng: () => number, fromCeiling = false): THREE.Group {
+  const g = new THREE.Group();
+  const h = 2.8 + rng() * 2.6; // 2.8–5.4 Three.js units tall
+  const baseR = 0.12 + rng() * 0.10;
+  // ── Trunk ──
+  const trunkMat = new THREE.MeshStandardMaterial({ color: 0x1B4A20, emissive: 0x0A2A10, emissiveIntensity: 0.55, roughness: 0.85 });
+  const trunkGeo = new THREE.CylinderGeometry(baseR * 0.55, baseR, h, 7);
+  const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+  trunk.position.y = h / 2;
+  g.add(trunk);
+  // ── Fronds at 3-5 heights ──
+  const frondMat = new THREE.MeshStandardMaterial({ color: 0x1F7830, emissive: 0x0E5020, emissiveIntensity: 0.75, side: THREE.DoubleSide, transparent: true, opacity: 0.92 });
+  const frondCount = 3 + Math.floor(rng() * 3);
+  for (let f = 0; f < frondCount; f++) {
+    const fy = (0.25 + rng() * 0.65) * h;
+    const fw = 0.55 + rng() * 0.85;
+    const fhh = 0.22 + rng() * 0.28;
+    const baseAngle = rng() * Math.PI * 2;
+    for (let side = 0; side < 2; side++) {
+      const a = baseAngle + side * Math.PI;
+      const frondGeo = new THREE.PlaneGeometry(fw, fhh);
+      const frond = new THREE.Mesh(frondGeo, frondMat);
+      frond.position.set(Math.cos(a) * (baseR + fw * 0.36), fy, Math.sin(a) * (baseR + fw * 0.36));
+      frond.rotation.y = a + Math.PI / 2;
+      frond.rotation.z = (side === 0 ? -1 : 1) * (0.18 + rng() * 0.28);
+      g.add(frond);
+    }
+  }
+  // ── Canopy bulge ──
+  const capMat = new THREE.MeshStandardMaterial({ color: 0x22882E, emissive: 0x10601E, emissiveIntensity: 0.9, transparent: true, opacity: 0.80 });
+  const capGeo = new THREE.SphereGeometry(0.38 + rng() * 0.28, 6, 5);
+  const cap = new THREE.Mesh(capGeo, capMat);
+  cap.scale.set(1.6 + rng() * 0.5, 0.55 + rng() * 0.25, 1.6 + rng() * 0.5);
+  cap.position.y = h + 0.1;
+  g.add(cap);
+  // Flip for ceiling-hanging variant
+  if (fromCeiling) { g.rotation.z = Math.PI; }
+  return g;
+}
+
+/** One wrecked submarine / cargo-ship section.  size ≈ 1.0 for a destroyer-class hull. */
+function buildShipWreck(rng: () => number, size = 1.0): THREE.Group {
+  const g = new THREE.Group();
+  const rust = new THREE.MeshStandardMaterial({ color: 0x5C2800, emissive: 0x8B3A10, emissiveIntensity: 0.5, roughness: 0.95, metalness: 0.65 });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x2A1400, emissive: 0x3A1A06, emissiveIntensity: 0.3, roughness: 1, metalness: 0.5 });
+  // ── Hull section ──
+  const hw = 9 * size, hh = 1.6 * size, hd = 2.4 * size;
+  const hullGeo = new THREE.BoxGeometry(hw, hh, hd);
+  const hull = new THREE.Mesh(hullGeo, rust);
+  hull.position.set(0, hh / 2 + 0.2, 0);
+  hull.rotation.z = (rng() - 0.5) * 0.45;   // tilt
+  hull.rotation.y = (rng() - 0.5) * 0.25;
+  g.add(hull);
+  // ── Frame ribs ──
+  const ribCount = 5 + Math.floor(rng() * 4);
+  for (let r = 0; r < ribCount; r++) {
+    const rx = -hw / 2 + hw * ((r + 0.5) / ribCount);
+    const ribGeo = new THREE.BoxGeometry(0.14, hh * 1.1, hd * 1.05);
+    const rib = new THREE.Mesh(ribGeo, dark);
+    rib.position.set(rx, 0, 0);
+    hull.add(rib);
+  }
+  // ── Conning tower / superstructure ──
+  const towGeo = new THREE.BoxGeometry(hw * 0.22, hh * 1.6, hd * 0.55);
+  const tower = new THREE.Mesh(towGeo, rust);
+  tower.position.set(hw * 0.08, hh * 1.3, 0);
+  hull.add(tower);
+  // ── Propeller stub ──
+  const propGeo = new THREE.CylinderGeometry(0.12 * size, 0.12 * size, hw * 0.14, 6);
+  propGeo.rotateZ(Math.PI / 2);
+  const prop = new THREE.Mesh(propGeo, dark);
+  prop.position.set(-hw * 0.56, -0.05, 0);
+  hull.add(prop);
+  // ── Torpedo tube cluster ──
+  for (let t = 0; t < 3; t++) {
+    const tubeGeo = new THREE.CylinderGeometry(0.09 * size, 0.09 * size, hw * 0.18, 6);
+    tubeGeo.rotateZ(Math.PI / 2);
+    const tube = new THREE.Mesh(tubeGeo, dark);
+    tube.position.set(hw * 0.48, (-0.25 + t * 0.25) * size, (t - 1) * 0.35 * size);
+    hull.add(tube);
+  }
+  // ── Ambient light under the wreck ──
+  const wLight = new THREE.PointLight(0xFF4400, 1.4, 22 * WS);
+  wLight.position.set(0, -1, 0);
+  hull.add(wLight);
+  return g;
+}
+
 function buildParticles(worldW: number, worldH: number): THREE.Points {
   const count = 300;
   const pos = new Float32Array(count * 3);
@@ -2772,6 +3137,7 @@ class EchoesGame {
   // Player (2D positions)
   private px = 400; private py = 400;
   private pvx = 0; private pvy = 0;
+  private engineCutActive = false;  // L2 stealth: Q toggles engine cut (zero thrust, near-silent)
   private o2 = 100; private flares = 3;
   private invTimer = 0; private glitchTimer = 0;
 
@@ -2848,6 +3214,42 @@ class EchoesGame {
   // Interactables
   private nearPod: Lifepod | null = null;
   private nearNoise: NoiseObj | null = null;
+  private nearConduit: PowerConduit | null = null;
+
+  // ── Level 1: Abyssal Forest hazards ───────────────────────────────────────
+  private gasPods: GasPod[] = [];
+  private gasPodMeshes: Array<{ mesh: THREE.Mesh; light: THREE.PointLight; id: string }> = [];
+  private snapBranches: SnapBranch[] = [];
+  private snapBranchMeshes: Array<{ mesh: THREE.Mesh; id: string }> = [];
+  private sonicBloomGroup: THREE.Group | null = null;
+
+  // ── Level 2: Iron Graveyard mechanics ─────────────────────────────────────
+  private graveyardBreathTimer = 0;
+  private wreckPositions: Vec2[] = [];
+  private bulkheadObstacleIdx = -1;
+  private bulkheadMesh: THREE.Mesh | null = null;
+  private bulkheadOpen = false;
+  private bulkheadAnimTimer = 0;  // ms remaining in open animation (0 = idle/done)
+  private bulkheadStalkerClearTimer = 0;
+  private bulkheadFlareLured = false;  // bulkhead only opens after flare lures the stalker
+
+  // ── Level 3: Drowned Metropolis mechanics ─────────────────────────────────
+  private powerConduits: PowerConduit[] = [];
+  private conduitMeshObjs: Array<{ mesh: THREE.Mesh; mat: THREE.MeshStandardMaterial; light: THREE.PointLight; id: number }> = [];
+  private conduitHintShown = false;
+  private gateObstacleIdxs: number[] = [];
+  // Power-flow pulses: spheres that travel from conduit → gate to visualise wall current
+  private _flowPulses: Array<{
+    mesh: THREE.Mesh; mat: THREE.MeshBasicMaterial;
+    x0: number; y0: number; x1: number; y1: number;
+    progress: number; speed: number;   // progress 0→1
+    delay: number;                     // ms before this pulse starts
+    active: boolean;
+  }> = [];
+  private unstableBuildings: UnstableBuilding[] = [];
+  private obstacleMeshes: THREE.Mesh[] = [];
+  private obstacleOverlayMeshes: THREE.Mesh[] = [];  // sonar twins — kept in lock-step with obstacleMeshes
+  private ghostEchoes: GhostEcho3D[] = [];
 
   // Post-processing uniforms that need per-frame updates
   private grainUniforms: { tDiffuse: { value: THREE.Texture | null }; time: { value: number }; intensity: { value: number } } | null = null;
@@ -3029,6 +3431,10 @@ class EchoesGame {
       if (this.state === "PLAYING") {
         if (e.code === "KeyF") this.dropFlare();
         if (e.code === "KeyE") this.interact();
+        if (e.code === "KeyQ") {
+          this.engineCutActive = !this.engineCutActive;
+          this.showSub(this.engineCutActive ? "[ ENGINE CUT — COASTING SILENT ]" : "[ ENGINE ONLINE ]");
+        }
       }
     });
     window.addEventListener("keyup", (e) => { this.keys[e.code] = false; });
@@ -3106,8 +3512,36 @@ class EchoesGame {
     const depthBase = [20, 55, 82][idx] ?? 20;
     this.gaugeDisplay = { o2: def.o2Start, depth: depthBase, sonarCharge: 100, hull: 100, flares: 3 };
     this.levPulseTimer = 8000; this.levBlocked = false;
-    this.nearPod = null; this.nearNoise = null;
+    this.nearPod = null; this.nearNoise = null; this.nearConduit = null;
     this.subtitle = ""; this.subTimer = 0;
+    // Level 1 — Abyssal Forest
+    this.gasPods = (def.gasPods ?? []).map(g => ({ ...g, triggered: false }));
+    this.gasPodMeshes = [];
+    this.snapBranches = (def.snapBranches ?? []).map(s => ({ ...s, triggered: false }));
+    this.snapBranchMeshes = [];
+    this.sonicBloomGroup = null;
+    // Level 2 — Iron Graveyard
+    this.graveyardBreathTimer = 25000 + Math.random() * 35000;
+    this.wreckPositions = [...(def.wreckPositions ?? [])];
+    this.bulkheadObstacleIdx = def.bulkheadObstacleIdx ?? -1;
+    this.bulkheadMesh = null; this.bulkheadOpen = false; this.bulkheadStalkerClearTimer = 0; this.bulkheadFlareLured = false;
+    // Level 3 — Drowned Metropolis
+    this.powerConduits = (def.powerConduits ?? []).map(c => ({ ...c, activated: false }));
+    this.conduitMeshObjs = [];
+    this.conduitHintShown = false;
+    this.gateObstacleIdxs = [...(def.gateObstacleIdxs ?? [])];
+    this.unstableBuildings = (def.unstableObstacleData ?? []).map(u => ({ ...u, collapsed: false }));
+    this.obstacleMeshes = [];
+    this.obstacleOverlayMeshes = [];
+    // Dispose any ghost echo meshes that haven't yet self-expired
+    for (const ge of this.ghostEchoes) {
+      this.sceneGroup.remove(ge.sphere);
+      ge.sphere.geometry.dispose(); ge.mat.dispose();
+    }
+    this.ghostEchoes = [];
+    this._bloomEventBuf = [];
+    this._flowPulses = [];
+    this.engineCutActive = false;  // always start each level with engines running
 
     this.activeFadeSet = new Set();
     this.boostPingCooldown = 0;
@@ -3238,13 +3672,20 @@ class EchoesGame {
     // Muted deep-sea rock palette for solid lit walls
     const wallPalette = [0x2a3a4a, 0x223040, 0x304050, 0x1f2a35, 0x283848, 0x35455a];
 
-    // Obstacle boxes — solid lit walls + sonar overlay twin
+    // Obstacle boxes — solid lit walls + sonar overlay twin (tracked in parallel for dynamic removal)
+    this.obstacleMeshes = [];
+    this.obstacleOverlayMeshes = [];
     let pi = 0;
     for (const rect of def.obstacles) {
       const c = wallPalette[pi++ % wallPalette.length];
       const obsMesh = buildObstacleMesh(rect, c);
       this.sceneGroup.add(obsMesh);
-      addOverlay(obsMesh);
+      this.obstacleMeshes.push(obsMesh);
+      // Build overlay twin manually (not via addOverlay) so we retain a reference per obstacle index
+      const ov = new THREE.Mesh(obsMesh.geometry, omat!);
+      ov.position.copy(obsMesh.position); ov.rotation.copy(obsMesh.rotation); ov.scale.copy(obsMesh.scale);
+      this.sceneGroup.add(ov);
+      this.obstacleOverlayMeshes.push(ov);
     }
 
     // Floor grid cells — solid lit floor + ceiling + sonar overlay per tile
@@ -3355,9 +3796,7 @@ class EchoesGame {
       this.noiseObjMeshes.push({ group, mat: group.userData.mat as THREE.LineBasicMaterial });
     }
 
-    // Bioluminescent particles
-    this.particleSystem = buildParticles(def.worldW, def.worldH);
-    this.sceneGroup.add(this.particleSystem);
+    // Particles removed — forest/wreck geometry replaces ambient clutter
 
     // ── Natural ocean obstacle scattering ──────────────────────────────────────
     // Await GLB rock geometry so fallback is only used on explicit failure,
@@ -3403,6 +3842,134 @@ class EchoesGame {
     }
 
     // Lullaby is already running from ensureAudio — level 4 proximity will raise the gain
+
+    // ── Level 1: Abyssal Forest — gas pod orbs + snap branch stubs + sonic bloom ──
+    if (def.id === 1) {
+      for (const gp of this.gasPods) {
+        const geo = new THREE.SphereGeometry(0.32, 8, 8);
+        const mat = new THREE.MeshStandardMaterial({ color: 0x88FF44, emissive: 0x336600, emissiveIntensity: 0.8, transparent: true, opacity: 0.88 });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(gp.x * WS, EYE_H * 0.65, gp.y * WS);
+        const light = new THREE.PointLight(0x88FF44, 1.4, 12 * WS);
+        light.position.set(0, 0, 0);
+        mesh.add(light);
+        this.sceneGroup.add(mesh);
+        addOverlay(mesh);
+        this.gasPodMeshes.push({ mesh, light, id: gp.id });
+      }
+      for (const sb of this.snapBranches) {
+        const geo = new THREE.CylinderGeometry(0.03, 0.06, 1.4, 4);
+        const mat = new THREE.MeshStandardMaterial({ color: 0x2A5C2A, emissive: 0x1A3A1A, emissiveIntensity: 0.3 });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.set(sb.x * WS, EYE_H * 0.4, sb.y * WS);
+        mesh.rotation.z = (Math.random() - 0.5) * 0.4;
+        this.sceneGroup.add(mesh);
+        addOverlay(mesh);
+        this.snapBranchMeshes.push({ mesh, id: sb.id });
+      }
+      const bloomGroup = new THREE.Group();
+      for (let bi = 0; bi < 14; bi++) {
+        const bGeo = new THREE.SphereGeometry(0.08 + Math.random() * 0.14, 5, 5);
+        const bMat = new THREE.MeshBasicMaterial({ color: 0x44FFAA, transparent: true, opacity: 0.18 + Math.random() * 0.22, blending: THREE.AdditiveBlending });
+        const bMesh = new THREE.Mesh(bGeo, bMat);
+        const angle = (bi / 14) * Math.PI * 2;
+        bMesh.position.set(Math.cos(angle) * (0.4 + Math.random() * 0.6), Math.random() * 1.2 - 0.6, Math.sin(angle) * (0.4 + Math.random() * 0.6));
+        bloomGroup.add(bMesh);
+      }
+      bloomGroup.position.set(def.playerStart.x * WS, EYE_H, def.playerStart.y * WS);
+      this.sceneGroup.add(bloomGroup);
+      this.sonicBloomGroup = bloomGroup;
+
+      // ── Kelp Forest — 30 floor trees + 20 ceiling trees throughout the tunnel ──
+      // Seeded so the forest looks identical on every load.
+      let _fSeed = 7331;
+      const frng = () => { _fSeed = (_fSeed * 1664525 + 1013904223) & 0xFFFFFFFF; return (_fSeed >>> 0) / 0xFFFFFFFF; };
+      // Floor trees: world y ≈ 1550-1700 (near floor), spread along full x range
+      const floorTreeXs = [380,520,680,800,940,1080,1200,1380,1520,1650,1780,1920,2060,2200,2350,2500,2620,2780,2900,3050,3180,3320,3480,3580,3650];
+      for (const tx of floorTreeXs) {
+        const tz = 1560 + frng() * 120;   // near the south (floor) wall
+        const tree = buildKelpTree(frng, false);
+        tree.position.set(tx * WS + (frng() - 0.5) * 1.5, 0, tz * WS);
+        tree.rotation.y = frng() * Math.PI * 2;
+        this.sceneGroup.add(tree);
+      }
+      // Ceiling trees: world y ≈ 600-750 (near ceiling), hanging down
+      const ceilTreeXs = [420,620,820,1050,1260,1460,1700,1880,2100,2320,2540,2720,2940,3150,3380,3560,3650,3700,460,720];
+      for (const tx of ceilTreeXs) {
+        const tz = 615 + frng() * 120;   // near the north (ceiling) wall
+        const tree = buildKelpTree(frng, true);
+        tree.position.set(tx * WS + (frng() - 0.5) * 1.5, WALL_H, tz * WS);
+        tree.rotation.y = frng() * Math.PI * 2;
+        this.sceneGroup.add(tree);
+      }
+    }
+
+    // ── Level 2: Iron Graveyard — bulkhead door highlight + conduit hint ─────
+    if (def.id === 2 && this.bulkheadObstacleIdx >= 0 && this.bulkheadObstacleIdx < this.obstacleMeshes.length) {
+      const bMesh = this.obstacleMeshes[this.bulkheadObstacleIdx];
+      // Swap material to amber-red for visual distinction
+      const bMat = new THREE.MeshStandardMaterial({ color: 0xAA3300, emissive: 0xCC4400, emissiveIntensity: 0.65 });
+      bMesh.material = bMat;
+      this.bulkheadMesh = bMesh;
+      const bLight = new THREE.PointLight(0xFF6600, 1.8, 14 * WS);
+      bLight.position.copy(bMesh.position);
+      this.sceneGroup.add(bLight);
+      const bLabel = makeBillboard("AFT BULKHEAD — SEALED", "#FF6600", 3.8, 0.85);
+      bLabel.position.set(bMesh.position.x, bMesh.position.y + 2.4, bMesh.position.z);
+      this.sceneGroup.add(bLabel);
+    }
+
+    // ── Level 2: Iron Graveyard — broken ship wrecks ─────────────────────────
+    if (def.id === 2) {
+      let _wSeed = 8821;
+      const wrng = () => { _wSeed = (_wSeed * 1664525 + 1013904223) & 0xFFFFFFFF; return (_wSeed >>> 0) / 0xFFFFFFFF; };
+      // Three distinct wrecks distributed along the level
+      const wreckDefs = [
+        { wx: 620,  wy: 1090, sz: 1.0 },   // bow section near Zone A entrance
+        { wx: 1820, wy:  930, sz: 0.85 },  // mid-level wreck, partially tilted up
+        { wx: 2950, wy: 1310, sz: 1.1 },   // stern wreck near exit
+      ];
+      for (const wd of wreckDefs) {
+        const wreck = buildShipWreck(wrng, wd.sz);
+        wreck.position.set(wd.wx * WS, 0, wd.wy * WS);
+        wreck.rotation.y = wrng() * Math.PI * 2;
+        this.sceneGroup.add(wreck);
+        // Label so the player immediately knows what they're looking at
+        const wLabel = makeBillboard("WRECK", "#FF6600", 4.2, 0.75);
+        wLabel.position.set(wd.wx * WS, 4.5, wd.wy * WS);
+        this.sceneGroup.add(wLabel);
+      }
+    }
+
+    // ── Level 3: Drowned Metropolis — power conduit objects + gate door markers ─
+    if (def.id === 3) {
+      this.conduitMeshObjs = [];
+      for (const cond of this.powerConduits) {
+        const cGeo = new THREE.BoxGeometry(0.55, 0.9, 0.25);
+        const cMat = new THREE.MeshStandardMaterial({ color: 0x224488, emissive: 0x002255, emissiveIntensity: 0.5 });
+        const cMesh = new THREE.Mesh(cGeo, cMat);
+        cMesh.position.set(cond.x * WS, EYE_H * 0.6, cond.y * WS);
+        const cLight = new THREE.PointLight(0x2244FF, 0.8, 10 * WS);
+        cLight.position.set(0, 0, 0);
+        cMesh.add(cLight);
+        const cLabel = makeBillboard("POWER CONDUIT — PRESS E", "#2266FF", 3.4, 0.8);
+        cLabel.position.set(0, 1.6, 0);
+        cMesh.add(cLabel);
+        this.sceneGroup.add(cMesh);
+        addOverlay(cMesh);
+        this.conduitMeshObjs.push({ mesh: cMesh, mat: cMat, light: cLight, id: cond.id });
+      }
+      for (const gIdx of this.gateObstacleIdxs) {
+        if (gIdx < this.obstacleMeshes.length) {
+          const gMesh = this.obstacleMeshes[gIdx];
+          const gMat = new THREE.MeshStandardMaterial({ color: 0x884400, emissive: 0xAA5500, emissiveIntensity: 0.55 });
+          gMesh.material = gMat;
+          const gLabel = makeBillboard("CITY GATE — LOCKED", "#FF8800", 4.0, 0.85);
+          gLabel.position.set(gMesh.position.x, gMesh.position.y + 3.2, gMesh.position.z);
+          this.sceneGroup.add(gLabel);
+        }
+      }
+    }
 
     // Transition to PLAYING after the async scatter is done
     this.state = "PLAYING";
@@ -3494,6 +4061,21 @@ class EchoesGame {
     this.noise = Math.min(100, this.noise + 5);
     // Flare sound event — redirects any hunting Leviathan toward the flare landing position
     this.soundEvents.push({ type: "flare", x: flareX, y: flareY, radius: LEV_HEAR_FLARE });
+    // Level 2: flare lure gate — only valid if the flare lands inside the gauntlet zone
+    // (within 1000px of the bulkhead door at x≈2300) so far-away flares don't trivially open it.
+    if (this.lvlIdx === 1 && !this.bulkheadOpen) {
+      const BULKHEAD_X = 2317;  // centre of obs[25] x=2300+w/2
+      const inGauntlet = Math.abs(flareX - BULKHEAD_X) < 1000;
+      if (inGauntlet) {
+        this.bulkheadFlareLured = true;
+        // Immediately redirect the gauntlet stalker toward the flare
+        const gs = this.enemies[1];
+        if (gs && gs.state !== "hunt") {
+          gs.lastSoundOrigin = { x: flareX, y: flareY };
+          gs.state = "alert";
+        }
+      }
+    }
     this.audio.flare();
     this.flareSwitchAnim = 200;
     this.valveFlareAngle += Math.PI * 0.75;
@@ -3527,15 +4109,123 @@ class EchoesGame {
         this.checkPuzzle(); return;
       }
     }
+    // Level 3: power conduit activation
+    if (this.lvlIdx === 2) {
+      for (const cond of this.powerConduits) {
+        if (cond.activated) continue;
+        if (Math.hypot(cond.x - this.px, cond.y - this.py) < INTERACT_RADIUS) {
+          cond.activated = true;
+          if (this.audioReady) this.audio.conduitActivate();
+          const obj = this.conduitMeshObjs.find(c => c.id === cond.id);
+          if (obj) {
+            obj.mat.color.set(0x00FFAA);
+            obj.mat.emissive.set(0x00AA55);
+            obj.mat.emissiveIntensity = 1.2;
+            obj.light.color.set(0x00FFAA);
+            obj.light.intensity = 2.4;
+          }
+          // Power-flow animation: route current from this conduit toward the nearer gate
+          // Gate 1 door centre: (1427, 1300), Gate 2 door centre: (2627, 1300)
+          const gate1 = { x: 1427, y: 1300 }; const gate2 = { x: 2627, y: 1300 };
+          const nearerGate = Math.hypot(cond.x - gate1.x, cond.y - gate1.y) <
+                             Math.hypot(cond.x - gate2.x, cond.y - gate2.y) ? gate1 : gate2;
+          this._spawnConduitFlow(cond.x, cond.y, nearerGate.x, nearerGate.y);
+          // Sequential: each conduit opens its own gate (id 0 → gateObstacleIdxs[0], id 1 → gateObstacleIdxs[1])
+          // This ensures conduit 1 (middle zone) is reachable only after conduit 0 opens gate 1.
+          const assignedGateIdx = (this.lvlDef?.gateObstacleIdxs ?? [])[cond.id] ?? -1;
+          if (assignedGateIdx >= 0) {
+            this.lvlDef!.obstacles[assignedGateIdx] = { x: -9999, y: -9999, w: 1, h: 1 };
+            if (assignedGateIdx < this.obstacleMeshes.length) this.obstacleMeshes[assignedGateIdx].visible = false;
+            if (assignedGateIdx < this.obstacleOverlayMeshes.length) this.obstacleOverlayMeshes[assignedGateIdx].visible = false;
+            this.gateObstacleIdxs = this.gateObstacleIdxs.filter(i => i !== assignedGateIdx);
+          }
+          const allOn = this.powerConduits.every(c => c.activated);
+          if (allOn) {
+            this.showSub("[ BOTH CONDUITS ONLINE — ALL CITY GATES CLEAR ]");
+          } else if (cond.id === 0) {
+            this.showSub("[ INNER GATE OPEN — SECOND CONDUIT LIES AHEAD ]");
+          } else {
+            this.showSub("[ OUTER GATE OPEN — PATH TO POD CLEAR ]");
+          }
+          return;
+        }
+      }
+    }
+    // Level 2: bulkhead check
+    if (this.lvlIdx === 1 && !this.bulkheadOpen) {
+      const def = this.lvlDef;
+      if (def && this.bulkheadObstacleIdx >= 0 && this.bulkheadObstacleIdx < def.obstacles.length) {
+        const bRect = def.obstacles[this.bulkheadObstacleIdx];
+        const bCX = bRect.x + bRect.w / 2;
+        const bCY = bRect.y + bRect.h / 2;
+        if (Math.hypot(bCX - this.px, bCY - this.py) < INTERACT_RADIUS + 60) {
+          this.showSub("[ AFT BULKHEAD SEALED — LURE THE STALKER AWAY TO OPEN ]"); return;
+        }
+      }
+    }
     for (const p of this.pods) {
       if (p.rescued) continue;
       if (Math.hypot(p.x - this.px, p.y - this.py) < INTERACT_RADIUS) {
-        if (this.lvlDef?.id === 2 && p.id === "noah" && !this.puzzleDone) {
-          this.showSub("[ DEBRIS FIELD BLOCKING — SILENCE ALL NOISE SOURCES FIRST ]"); return;
+        // Level 2: gates must be open
+        if (this.lvlIdx === 1 && p.id === "noah" && !this.bulkheadOpen) {
+          this.showSub("[ AFT BULKHEAD SEALED — LURE THE STALKER AWAY FIRST ]"); return;
+        }
+        // Level 3: outer gate (gateObstacleIdxs[1] = obs[36]) must be open to reach Mia
+        if (this.lvlIdx === 2 && p.id === "mia") {
+          const outerGateIdx = (this.lvlDef?.gateObstacleIdxs ?? [])[1] ?? -1;
+          if (outerGateIdx >= 0 && this.gateObstacleIdxs.includes(outerGateIdx)) {
+            this.showSub("[ OUTER GATE SEALED — FIND THE SECOND POWER CONDUIT ]"); return;
+          }
         }
         this.dockPod(p); return;
       }
     }
+  }
+
+
+  private triggerBuildingCollapse(ub: UnstableBuilding) {
+    if (ub.collapsed) return;
+    ub.collapsed = true;
+    if (this.audioReady) this.audio.buildingCollapse();
+    if (!this.lvlDef) return;
+    this.noise = Math.min(100, this.noise + 35);
+    this.soundEvents.push({ type: "extra_large", x: ub.cx, y: ub.cy, radius: 650 });
+    // Remove the original monolithic obstacle
+    const obs = this.lvlDef.obstacles[ub.obstacleIdx];
+    if (obs) this.lvlDef.obstacles[ub.obstacleIdx] = { x: -9999, y: -9999, w: 1, h: 1 };
+    if (ub.obstacleIdx < this.obstacleMeshes.length) this.obstacleMeshes[ub.obstacleIdx].visible = false;
+    if (ub.obstacleIdx < this.obstacleOverlayMeshes.length) this.obstacleOverlayMeshes[ub.obstacleIdx].visible = false;
+    // Spawn 4–6 debris slabs as persistent new collision rectangles
+    const debrisCount = 4 + Math.floor(Math.random() * 3);
+    const baseW = obs ? obs.w : 80;
+    const baseH = obs ? obs.h : 200;
+    for (let d = 0; d < debrisCount; d++) {
+      const dw = 30 + Math.random() * 50;
+      const dh = 18 + Math.random() * 38;
+      const dx = ub.cx - baseW * 0.5 + Math.random() * (baseW + 80) - 40;
+      const dy = ub.cy - baseH * 0.5 + Math.random() * (baseH + 80) - 40;
+      const debrisRect = { x: dx - dw / 2, y: dy - dh / 2, w: dw, h: dh };
+      // Push into live obstacles so collision detection picks them up immediately
+      this.lvlDef.obstacles.push(debrisRect);
+      // Visualise debris as a flat dark box in the 3D scene
+      const geo = new THREE.BoxGeometry(dw * WS, 4 * WS, dh * WS);
+      const mat = new THREE.MeshStandardMaterial({ color: 0x222233, roughness: 0.9, metalness: 0.25 });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set((dx) * WS, (2 + Math.random() * 6) * WS, (dy) * WS);
+      mesh.rotation.y = Math.random() * Math.PI;
+      this.sceneGroup.add(mesh);   // sceneGroup is cleared on level load — no leak
+      this.obstacleMeshes.push(mesh);
+      // Sonar overlay twin for debris so pings illuminate new rubble correctly
+      if (this.sonarOverlayMat) {
+        const ov = new THREE.Mesh(geo, this.sonarOverlayMat);
+        ov.position.copy(mesh.position); ov.rotation.copy(mesh.rotation); ov.scale.copy(mesh.scale);
+        this.sceneGroup.add(ov);
+        this.obstacleOverlayMeshes.push(ov);
+      }
+    }
+    this.showSub("[ STRUCTURAL COLLAPSE — MASSIVE ACOUSTIC SIGNATURE ]", 3500);
+    // Prolonged screen shake — building comes down hard
+    this.shakeTimer = 680; this.shakeDuration = 680; this.shakeIntensity = 0.11;
   }
 
   private dockPod(pod: Lifepod) {
@@ -3568,9 +4258,263 @@ class EchoesGame {
   }
 
   private checkPuzzle() {
+    if (this.noiseObjs.length === 0) return;
     if (this.noiseObjs.every(o => o.silenced) && !this.puzzleDone) {
       this.puzzleDone = true;
       this.showSub("[ ALL SOURCES SILENCED — DEBRIS FIELD DISINTEGRATING — POD RELEASED ]");
+    }
+  }
+
+  // ── Level 1: Abyssal Forest mechanics ─────────────────────────────────────
+  private updateGasPods(dt: number) {
+    if (!this.lvlDef) return;
+    for (const gp of this.gasPods) {
+      if (gp.triggered) continue;
+      const dist = Math.hypot(gp.x - this.px, gp.y - this.py);
+      if (dist < 60) {
+        gp.triggered = true;
+        if (this.audioReady) this.audio.gasPodExplosion();
+        // Noise burst
+        this.noise = Math.min(100, this.noise + 28);
+        this.soundEvents.push({ type: "large_ping", x: gp.x, y: gp.y, radius: 420 });
+        // Hull damage
+        this.hullIntegrity = Math.max(0, this.hullIntegrity - 12);
+        this.gaugeVelocity.hull -= 45;
+        this.hullBezelFlash = 480;
+        this.shakeTimer = 260; this.shakeDuration = 260; this.shakeIntensity = 0.065;
+        this.showSub("[ GAS POD DETONATED — ACOUSTIC SIGNATURE SPIKED ]", 2400);
+        // Remove 3D mesh
+        const mo = this.gasPodMeshes.find(m => m.id === gp.id);
+        if (mo) { this.sceneGroup.remove(mo.mesh); mo.mesh.geometry.dispose(); }
+      }
+    }
+  }
+
+  private updateSnapBranches(dt: number) {
+    if (!this.lvlDef) return;
+    for (const sb of this.snapBranches) {
+      if (sb.triggered) continue;
+      const dist = Math.hypot(sb.x - this.px, sb.y - this.py);
+      if (dist < 48) {
+        sb.triggered = true;
+        if (this.audioReady) this.audio.snapBranchCrack();
+        // Large noise event — punishes reckless movement, full Drifter alert range
+        this.noise = Math.min(100, this.noise + 28);
+        this.soundEvents.push({ type: "large_ping", x: sb.x, y: sb.y, radius: 640 });
+        this.showSub("[ KELP BRANCH SNAPPED — LARGE ACOUSTIC BURST ]", 2000);
+        const mo = this.snapBranchMeshes.find(m => m.id === sb.id);
+        if (mo) {
+          const mat = (mo.mesh.material as THREE.MeshStandardMaterial);
+          mat.color.set(0x885522); mat.emissive.set(0x220000);
+        }
+      }
+    }
+  }
+
+  // Bloom event-magnitude buffer — rolling 3-second window of SoundEvent magnitudes
+  // Populated from soundEvents just before they're cleared each frame in updateNoise.
+  private _bloomEventBuf: Array<{ t: number; magnitude: number }> = [];
+
+  // Weights map: how loud (0–100 normalised) each SoundEvent type counts as
+  private static readonly BLOOM_MAG: Record<string, number> = {
+    collision: 100, extra_large: 95, large_ping: 65, medium_ping: 42, full_speed: 40, flare: 55, small_ping: 20,
+  };
+
+  // Called from updateNoise each frame before soundEvents is cleared
+  private _recordBloomEvents() {
+    if (this.lvlIdx !== 0) return;   // only used on level 1
+    const now = this.lvlTime;        // seconds
+    for (const se of this.soundEvents) {
+      const mag = EchoesGame.BLOOM_MAG[se.type] ?? 10;
+      this._bloomEventBuf.push({ t: now, magnitude: mag });
+    }
+    // Prune stale entries (> 3 s old)
+    this._bloomEventBuf = this._bloomEventBuf.filter(e => now - e.t <= 3.0);
+  }
+
+  // Returns summed event magnitude in the last 3 s, clamped to 0–100
+  private _bloomMagnitudeSum(): number {
+    const sum = this._bloomEventBuf.reduce((s, e) => s + e.magnitude, 0);
+    // Normalise: a collision (100) is considered maximum stimulation
+    return Math.min(100, sum);
+  }
+
+  private updateSonicBloom(_dt: number) {
+    if (!this.sonicBloomGroup) return;
+    const t = this.lvlTime;
+    // Sum of SoundEvent magnitudes in the last 3 s drives pulse speed and brightness
+    const recentNoise = this._bloomMagnitudeSum();       // 0–100
+    const noiseFrac = recentNoise / 100;                  // 0–1
+    // Speed: 1.2 rad/s at silence → 4.5 rad/s at full noise
+    const pulseSpeed = 1.2 + noiseFrac * 3.3;
+    // Peak opacity: 0.10 at silence → 0.48 at full noise
+    const peakOpacity = 0.10 + noiseFrac * 0.38;
+    this.sonicBloomGroup.children.forEach((child, i) => {
+      const m = child as THREE.Mesh;
+      const mat = m.material as THREE.MeshBasicMaterial;
+      const phase = t * pulseSpeed + i * 0.45;
+      // Brightness modulates between 55% and 100% of peakOpacity
+      mat.opacity = Math.max(0.04, peakOpacity * (0.55 + 0.45 * Math.sin(phase)));
+      // Scale similarly amplified by noise
+      const scaleMod = 0.12 + noiseFrac * 0.18;
+      m.scale.setScalar(1.0 + scaleMod * Math.sin(phase + i * 0.32));
+    });
+    this.sonicBloomGroup.position.set(this.px * WS, EYE_H, this.py * WS);
+  }
+
+  // ── Level 2: Iron Graveyard mechanics ─────────────────────────────────────
+  private updateGraveyardBreath(dt: number) {
+    this.graveyardBreathTimer -= dt;
+    if (this.graveyardBreathTimer <= 0) {
+      // 25–60 second window between events
+      this.graveyardBreathTimer = 25000 + Math.random() * 35000;
+      if (this.audioReady) this.audio.wreckSettle();
+      // Pick a random wreck position to emanate from
+      if (this.wreckPositions.length > 0) {
+        const wp = this.wreckPositions[Math.floor(Math.random() * this.wreckPositions.length)];
+        // Medium-strength event: dedicated type for tuning, audible to nearby creatures
+        this.noise = Math.min(100, this.noise + 14);
+        this.soundEvents.push({ type: "medium_ping", x: wp.x, y: wp.y, radius: 480 });
+        // Brief camera shake — structural resonance from hull settling
+        this.shakeTimer = 280; this.shakeDuration = 280; this.shakeIntensity = 0.035;
+      }
+    }
+  }
+
+  private updateBulkhead(dt: number) {
+    // Animate door-shrink after open is triggered (scale Y 1 → 0 over 800ms, then hide)
+    if (this.bulkheadAnimTimer > 0 && this.bulkheadMesh) {
+      this.bulkheadAnimTimer = Math.max(0, this.bulkheadAnimTimer - dt);
+      const progress = 1 - this.bulkheadAnimTimer / 800;  // 0→1
+      this.bulkheadMesh.scale.set(1, Math.max(0.001, 1 - progress), 1);
+      if (this.bulkheadAnimTimer <= 0) {
+        this.bulkheadMesh.visible = false;
+        this.showSub("[ AFT BULKHEAD OPEN — PATH CLEAR ]", 2200);
+      }
+    }
+    if (this.bulkheadOpen || this.bulkheadObstacleIdx < 0 || !this.lvlDef) return;
+    // bulkheadFlareLured is set eagerly in dropFlare() — soundEvents are already cleared by
+    // the time this method runs so we do not scan them here.
+    if (!this.bulkheadFlareLured) return;
+    const gauntletStalker = this.enemies[1];
+    if (!gauntletStalker) return;
+    const bRect = this.lvlDef.obstacles[this.bulkheadObstacleIdx];
+    if (!bRect) return;
+    const bCX = bRect.x + bRect.w / 2;
+    const bCY = bRect.y + bRect.h / 2;
+    const stalkerDist = Math.hypot(gauntletStalker.x - bCX, gauntletStalker.y - bCY);
+    if (stalkerDist > 450) {
+      this.bulkheadStalkerClearTimer += dt;
+      if (this.bulkheadStalkerClearTimer >= 2000) {
+        this.bulkheadOpen = true;
+        this.lvlDef.obstacles[this.bulkheadObstacleIdx] = { x: -9999, y: -9999, w: 1, h: 1 };
+        if (this.bulkheadObstacleIdx < this.obstacleOverlayMeshes.length) this.obstacleOverlayMeshes[this.bulkheadObstacleIdx].visible = false;
+        // Kick off the door-shrink animation (0.8s scale-Y collapse)
+        this.bulkheadAnimTimer = 800;
+        this.showSub("[ AFT BULKHEAD DISENGAGING ]", 2800);
+        if (this.audioReady) this.audio.conduitActivate();
+      }
+    } else {
+      this.bulkheadStalkerClearTimer = 0;
+    }
+  }
+
+  // ── Level 3: Drowned Metropolis mechanics ─────────────────────────────────
+
+  // Spawn a stream of traveling pulse spheres from (srcX,srcY) → (dstX,dstY)
+  private _spawnConduitFlow(srcX: number, srcY: number, dstX: number, dstY: number) {
+    const COUNT = 7;
+    for (let i = 0; i < COUNT; i++) {
+      const geo = new THREE.SphereGeometry(0.22, 6, 5);
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0x00FFCC, transparent: true, opacity: 0.0,
+        blending: THREE.AdditiveBlending, depthWrite: false,
+      });
+      const mesh = new THREE.Mesh(geo, mat);
+      mesh.position.set(srcX * WS, EYE_H * 0.8, srcY * WS);
+      this.sceneGroup.add(mesh);
+      this._flowPulses.push({
+        mesh, mat,
+        x0: srcX, y0: srcY, x1: dstX, y1: dstY,
+        progress: 0, speed: 0.00025 + Math.random() * 0.0001,
+        delay: i * 280,   // stagger 280ms apart
+        active: false,
+      });
+    }
+  }
+
+  private updatePowerConduits(dt: number) {
+    if (!this.conduitHintShown) {
+      const anyNear = this.powerConduits.some(c => Math.hypot(c.x - this.px, c.y - this.py) < 280);
+      if (anyNear) {
+        this.conduitHintShown = true;
+        this.showSub("[ POWER CONDUIT NEARBY — PRESS E TO ACTIVATE ]", 3000);
+      }
+    }
+    // Pulse the conduit lights (inactive conduits only)
+    const t = this.lvlTime;
+    for (const obj of this.conduitMeshObjs) {
+      const cond = this.powerConduits.find(c => c.id === obj.id);
+      if (!cond || cond.activated) continue;
+      obj.light.intensity = 0.6 + 0.4 * Math.sin(t * 3.2 + obj.id);
+    }
+    // Animate power-flow pulse spheres conduit → gate
+    for (let i = this._flowPulses.length - 1; i >= 0; i--) {
+      const fp = this._flowPulses[i];
+      if (fp.delay > 0) { fp.delay -= dt; continue; }
+      fp.active = true;
+      fp.progress = Math.min(1, fp.progress + fp.speed * dt);
+      const px = fp.x0 + (fp.x1 - fp.x0) * fp.progress;
+      const py = fp.y0 + (fp.y1 - fp.y0) * fp.progress;
+      fp.mesh.position.set(px * WS, EYE_H * 0.8, py * WS);
+      // Fade in at start, fade out near destination
+      const fade = 1 - Math.abs(fp.progress - 0.5) * 2;
+      fp.mat.opacity = Math.max(0, fade * 0.65);
+      if (fp.progress >= 1) {
+        this.sceneGroup.remove(fp.mesh);
+        fp.mesh.geometry.dispose(); fp.mat.dispose();
+        this._flowPulses.splice(i, 1);
+      }
+    }
+  }
+
+  private updateUnstableBuildings() {
+    if (!this.lvlDef) return;
+    const playerSpeed = Math.hypot(this.pvx, this.pvy);
+    for (const ub of this.unstableBuildings) {
+      if (ub.collapsed) continue;
+      const r = this.lvlDef.obstacles[ub.obstacleIdx];
+      if (!r || r.x === -9999) continue;
+      // Trigger 1: high-speed player ramming (AABB edge proximity + force threshold)
+      const nearX = Math.max(r.x, Math.min(this.px, r.x + r.w));
+      const nearY = Math.max(r.y, Math.min(this.py, r.y + r.h));
+      if (Math.hypot(nearX - this.px, nearY - this.py) < 8 && playerSpeed > 160) {
+        this.triggerBuildingCollapse(ub); continue;
+      }
+      // Trigger 2: any qualifying large soundEvent (collision or large_ping) nearby
+      for (const se of this.soundEvents) {
+        if (se.type !== "large_ping" && se.type !== "medium_ping" && se.type !== "extra_large" && se.type !== "collision") continue;
+        if (Math.hypot(se.x - ub.cx, se.y - ub.cy) < se.radius * 0.55) {
+          this.triggerBuildingCollapse(ub); break;
+        }
+      }
+    }
+  }
+
+  private updateGhostEchoes(dt: number) {
+    for (let i = this.ghostEchoes.length - 1; i >= 0; i--) {
+      const ge = this.ghostEchoes[i];
+      ge.life -= dt;
+      ge.radius = ge.maxR * (1 - ge.life / 1800);  // life starts at 1800ms — begins near-zero radius
+      ge.mat.opacity = Math.max(0, (ge.life / 3200) * 0.22);
+      ge.sphere.geometry.dispose();
+      ge.sphere.geometry = new THREE.SphereGeometry(ge.radius * WS, 12, 8);
+      if (ge.life <= 0) {
+        this.sceneGroup.remove(ge.sphere);
+        ge.sphere.geometry.dispose();
+        ge.mat.dispose();
+        this.ghostEchoes.splice(i, 1);
+      }
     }
   }
 
@@ -3694,6 +4638,7 @@ class EchoesGame {
     this.updateFlares(dt);    // emit flare events BEFORE enemies consume them this frame
     this.updateEnemies(dt);   // consume all sound events (sonar, collision, movement, flares)
     this.updatePings(dt);
+    if (this.lvlIdx === 2) this.updateUnstableBuildings(); // read soundEvents BEFORE updateNoise clears them
     this.updateNoise(dt);     // clear soundEvents at end of frame
     this.updateO2(dt);
     this.updateDashboard(dt);
@@ -3709,6 +4654,9 @@ class EchoesGame {
     if (this.glitchTimer > 0) this.glitchTimer -= dt;
     if (this.lvlIdx === 2) this.updateLullaby();
     this.updateLetters(dt);
+    if (this.lvlIdx === 0) { this.updateGasPods(dt); this.updateSnapBranches(dt); this.updateSonicBloom(dt); }
+    if (this.lvlIdx === 1) { this.updateGraveyardBreath(dt); this.updateBulkhead(dt); }
+    if (this.lvlIdx === 2) { this.updatePowerConduits(dt); this.updateGhostEchoes(dt); }
   }
 
   private updateLetters(dt: number) {
@@ -3873,14 +4821,16 @@ class EchoesGame {
     const rgtY =  -Math.sin(this.yaw);
 
     // ── Apply force from smoothed input ──
+    // Engine cut (Q): kills all thrust — sub coasts on inertia and goes nearly silent
+    const engineCut = this.engineCutActive;
     const spd = PLAYER_SPEED * (boosting ? PLAYER_BOOST_MULT : 1);
-    const forceX = (fwdX * this.smoothFwd + rgtX * this.smoothSide) * spd;
-    const forceY = (fwdY * this.smoothFwd + rgtY * this.smoothSide) * spd;
+    const forceX = engineCut ? 0 : (fwdX * this.smoothFwd + rgtX * this.smoothSide) * spd;
+    const forceY = engineCut ? 0 : (fwdY * this.smoothFwd + rgtY * this.smoothSide) * spd;
     this.pvx += forceX * dtS;
     this.pvy += forceY * dtS;
 
-    // Sprinting adds noise
-    if (boosting && (rawFwd || rawSide)) this.noise = Math.min(100, this.noise + 2.5 * dtS);
+    // Sprinting adds noise (suppressed during engine cut)
+    if (!engineCut && boosting && (rawFwd || rawSide)) this.noise = Math.min(100, this.noise + 2.5 * dtS);
 
     // Boost auto-ping: while shift held, brief sonar dim-ping every 2 s
     if (boosting) {
@@ -3908,8 +4858,9 @@ class EchoesGame {
     this.py = Math.max(PLAYER_SIZE + 2, Math.min(def.worldH - PLAYER_SIZE - 2, ry));
 
     // Full-speed movement emits periodic sound events for Leviathan alerting
+    // Engine cut suppresses these emissions entirely — the primary stealth reward for L2
     this.levSpeedNoiseTimer -= dt;
-    if (this.levSpeedNoiseTimer <= 0 && speed > PLAYER_SPEED * LEV_PLAYER_SLOW_FRAC) {
+    if (!this.engineCutActive && this.levSpeedNoiseTimer <= 0 && speed > PLAYER_SPEED * LEV_PLAYER_SLOW_FRAC) {
       this.levSpeedNoiseTimer = LEV_SPEED_NOISE_INTV;
       this.soundEvents.push({ type: "full_speed", x: this.px, y: this.py, radius: LEV_HEAR_FULL_SPEED });
     } else if (speed <= PLAYER_SPEED * LEV_PLAYER_SLOW_FRAC) {
@@ -4394,6 +5345,63 @@ class EchoesGame {
         if (od >= inner - 18 && od <= outer + 18) o.revealTimer = 9000;
       }
 
+      // ── Level 3: large ping can collapse nearby unstable buildings ──────────
+      if (this.lvlIdx === 2 && p.type === "large") {
+        for (const ub of this.unstableBuildings) {
+          if (ub.collapsed) continue;
+          const bd = Math.hypot(ub.cx - p.x, ub.cy - p.y);
+          if (bd >= inner - 80 && bd <= outer + 80) {
+            this.triggerBuildingCollapse(ub);
+          }
+        }
+      }
+
+      // ── Level 3: spawn 1–2 offset ghost echo rings on each ping ──────────────
+      // Ghosts originate at plausible dead-end offsets, NOT at the player ping origin.
+      // They are visually distinct (dimmer, slower) and decay quickly to deceive enemies.
+      // ghostSpawned flag ensures exactly one ghost batch per ping, not per frame.
+      // Only player-initiated pings (small/large) spawn ghost echoes — flare pings are excluded
+      if (this.lvlIdx === 2 && (p.type === "small" || p.type === "large") && p.radius < p.maxRadius * 0.18 && !p.ghostSpawned) {
+        p.ghostSpawned = true;
+        // L3 Drowned Metropolis dead-end nodes: vetted positions at corridor termini,
+        // flooded plazas and collapsed alcoves — ghost echoes are biased 70% toward
+        // these so they plausibly suggest alternate routes rather than open water.
+        const L3_DEAD_ENDS = [
+          { x: 3420, y: 2200 }, // flooded south plaza (right district)
+          { x:  380, y: 1820 }, // collapsed left alley
+          { x: 1900, y:  320 }, // sunken station entrance (north)
+          { x: 3150, y:  410 }, // upper-right substation
+          { x: 1820, y: 2120 }, // central market dead-end
+          { x:  750, y:  880 }, // conduit alcove (Conduit 0 recess)
+          { x: 2100, y: 1500 }, // conduit alcove (Conduit 1 recess — mid district)
+        ];
+        const count = 1 + (Math.random() < 0.45 ? 1 : 0);
+        for (let gi = 0; gi < count; gi++) {
+          // 70% bias toward a dead-end node, 30% fully random direction
+          let angle: number;
+          if (Math.random() < 0.70) {
+            const node = L3_DEAD_ENDS[Math.floor(Math.random() * L3_DEAD_ENDS.length)];
+            angle = Math.atan2(node.y - p.y, node.x - p.x) + (Math.random() - 0.5) * 0.6;
+          } else {
+            angle = Math.random() * Math.PI * 2;
+          }
+          const offsetDist = (180 + Math.random() * 180);
+          const ox = p.x + Math.cos(angle) * offsetDist;
+          const oy = p.y + Math.sin(angle) * offsetDist;
+          const ghostGeo = new THREE.SphereGeometry(0.5, 10, 7);
+          const ghostMat = new THREE.MeshBasicMaterial({
+            color: 0xAABBEE, wireframe: true, transparent: true,
+            opacity: 0.12, blending: THREE.AdditiveBlending, depthWrite: false,
+          });
+          const ghostSphere = new THREE.Mesh(ghostGeo, ghostMat);
+          ghostSphere.position.set(ox * WS, EYE_H, oy * WS);
+          this.sceneGroup.add(ghostSphere);  // sceneGroup cleared on level load
+          // Fast decay: 1800ms life, smaller max radius than real pings
+          const ghostMaxR = p.maxRadius * (0.45 + Math.random() * 0.25);
+          this.ghostEchoes.push({ sphere: ghostSphere, mat: ghostMat, radius: 0, maxR: ghostMaxR, life: 1800 });
+        }
+      }
+
       // ── Sync radius to matching 3D ring (arrays are kept in lock-step) ──
       if (i < this.ping3Ds.length) {
         this.ping3Ds[i].radius = p.radius * WS;
@@ -4435,6 +5443,8 @@ class EchoesGame {
   private updateNoise(dt: number) {
     this.noise = Math.max(0, this.noise - NOISE_DECAY * (dt / 1000));
     for (const o of this.noiseObjs) if (!o.silenced) this.noise = Math.min(100, this.noise + o.noiseRate * (dt / 1000));
+    // Record sound-event magnitudes into the Sonic Bloom rolling buffer (L1 only)
+    this._recordBloomEvents();
     // Sound events are consumed once per frame by the leviathan AI — clear after each tick
     this.soundEvents = [];
   }
@@ -4456,13 +5466,16 @@ class EchoesGame {
   }
 
   private updateInteractables() {
-    this.nearPod = null; this.nearNoise = null;
+    this.nearPod = null; this.nearNoise = null; this.nearConduit = null;
     if (!this.lvlDef) return;
     for (const p of this.pods) {
       if (!p.rescued && Math.hypot(p.x - this.px, p.y - this.py) < INTERACT_RADIUS) { this.nearPod = p; return; }
     }
     for (const o of this.noiseObjs) {
       if (!o.silenced && Math.hypot(o.x - this.px, o.y - this.py) < INTERACT_RADIUS) { this.nearNoise = o; return; }
+    }
+    for (const c of this.powerConduits) {
+      if (!c.activated && Math.hypot(c.x - this.px, c.y - this.py) < INTERACT_RADIUS) { this.nearConduit = c; return; }
     }
   }
 
@@ -4503,22 +5516,28 @@ class EchoesGame {
     const radii   = u.uPingRadius.value  as number[];
     const ops     = u.uPingOpacity.value as number[];
     const colors  = u.uPingColor.value   as THREE.Vector3[];
+    // Per-level base sonar colour (small/large pings)
+    // L1 Abyssal Forest → blue-green; L2 Iron Graveyard → amber-rust; L3 Drowned Metropolis → grey-white
+    type RGB = [number, number, number];
+    const levelBaseSmall: RGB[] = [[0.04, 0.95, 0.75], [0.90, 0.52, 0.05], [0.72, 0.82, 0.90]];
+    const levelBaseLarge: RGB[] = [[0.12, 1.00, 0.80], [1.00, 0.62, 0.08], [0.88, 0.94, 1.00]];
+    const bs = levelBaseSmall[this.lvlIdx] ?? levelBaseSmall[0];
+    const bl = levelBaseLarge[this.lvlIdx] ?? levelBaseLarge[0];
     for (let i = 0; i < 5; i++) {
       if (i < this.pings.length) {
         const p = this.pings[i];
         origins[i].set(p.x * WS, EYE_H, p.y * WS);
         radii[i] = p.radius * WS;
         ops[i]   = Math.max(0, 1.0 - Math.pow(p.radius / p.maxRadius, 5.0));
-        // Sonar colour varies by ping type for visual differentiation
-        if (p.type === "flare")       colors[i].set(1.0, 0.55, 0.0);  // orange
-        else if (p.type === "large")  colors[i].set(0.15, 0.98, 1.0); // brighter cyan
-        else if (p.type === "boost")  colors[i].set(0.45, 0.45, 0.45); // dim gray
-        else                          colors[i].set(0.04, 0.92, 1.0);  // small — standard cyan
+        if (p.type === "flare")       colors[i].set(1.0, 0.55, 0.0);
+        else if (p.type === "large")  colors[i].set(bl[0], bl[1], bl[2]);
+        else if (p.type === "boost")  colors[i].set(0.45, 0.45, 0.45);
+        else                          colors[i].set(bs[0], bs[1], bs[2]);
       } else {
         origins[i].set(0, 0, 0);
         radii[i] = -1;
         ops[i]   = 0;
-        colors[i].set(0.04, 0.92, 1.0);
+        colors[i].set(bs[0], bs[1], bs[2]);
       }
     }
   }
@@ -6019,6 +7038,7 @@ class EchoesGame {
 
     if (this.nearPod) this.renderPrompt(`[E] DOCK — ${this.nearPod.character}'S POD`);
     else if (this.nearNoise) this.renderPrompt("[E] SILENCE NOISE SOURCE");
+    else if (this.nearConduit) this.renderPrompt("[E] ACTIVATE POWER CONDUIT");
     if (this.subTimer > 0 && this.subtitle) this.renderSubtitle();
 
     // Gold letter collectibles — projected into viewport
