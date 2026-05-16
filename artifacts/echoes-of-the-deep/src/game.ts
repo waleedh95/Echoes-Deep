@@ -141,6 +141,7 @@ const PLAYER_SIZE = 15;
 const PLAYER_SPEED = 210;
 const PLAYER_BOOST_MULT = 2.0;
 const PLAYER_FRICTION = 0.84;
+const PLAYER_BOUNCE_RESTITUTION = 0.2; // fraction of normal velocity reflected on wall impact
 const O2_DRAIN_NORMAL = 1 / 3;
 const O2_DRAIN_BOOST = 1.0;
 const O2_LOSS_HIT = 15;
@@ -4944,8 +4945,9 @@ class EchoesGame {
     // ── Sub-stepped movement + solid obstacle collision ──
     // Split large-displacement frames into sub-steps so boost-speed movement
     // cannot tunnel through thin geometry in one tick.
-    // Velocity inward component is zeroed on each sub-step hit so the sub
-    // stops dead against solid surfaces while retaining tangential (slide) velocity.
+    // On each sub-step hit the inward velocity component is reflected by
+    // PLAYER_BOUNCE_RESTITUTION (small bounce) while tangential velocity is
+    // preserved unchanged for natural wall-sliding.
     const MAX_STEP = PLAYER_SIZE * 0.5;
     const rawDist  = Math.hypot(this.pvx * dtS, this.pvy * dtS);
     const hasObs   = def.obstacles.length > 0;
@@ -4970,8 +4972,9 @@ class EchoesGame {
         fy = Math.max(PLAYER_SIZE + 2, Math.min(def.worldH - PLAYER_SIZE - 2, stepNy));
       }
 
-      // Zero the inward velocity component so the sub stops dead against the
-      // surface — tangential velocity is preserved for natural wall-sliding.
+      // Cancel the inward velocity component and apply a small restitution so
+      // the sub bounces subtly off surfaces rather than stopping dead.
+      // Tangential velocity is preserved for natural wall-sliding.
       const scorrX = fx - stepNx;
       const scorrY = fy - stepNy;
       const scorrDist = Math.hypot(scorrX, scorrY);
@@ -4980,8 +4983,9 @@ class EchoesGame {
         const normY = scorrY / scorrDist;
         const inward = this.pvx * normX + this.pvy * normY;
         if (inward < 0) {
-          this.pvx -= inward * normX;
-          this.pvy -= inward * normY;
+          // Remove the inward component and add a fraction back outward
+          this.pvx -= inward * (1 + PLAYER_BOUNCE_RESTITUTION) * normX;
+          this.pvy -= inward * (1 + PLAYER_BOUNCE_RESTITUTION) * normY;
         }
       }
 
