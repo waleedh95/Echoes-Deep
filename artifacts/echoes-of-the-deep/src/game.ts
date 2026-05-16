@@ -1593,6 +1593,15 @@ function level2(): LevelData {
       { x: 440, y: 350, type: "stalker", waypoints: [{ x: 110, y: 200 }, { x: 550, y: 200 }, { x: 550, y: 580 }, { x: 110, y: 580 }], wpIdx: 0, speed: 58, hitR: 26, hearingDist: 760, alertDist: 560 },
       // Pod guard — tighter radius, faster; requires silencing noise objects first
       { x: 1300, y: 900, type: "stalker", waypoints: [{ x: 1100, y: 700 }, { x: 1550, y: 700 }, { x: 1550, y: 1100 }, { x: 1100, y: 1100 }], wpIdx: 0, speed: 64, hitR: 26, hearingDist: 680, alertDist: 480 },
+      // Mid-corridor Leviathan — 4-state hunt AI; slower and less perceptive than Level 3's for progressive difficulty
+      { x: 1020, y: 700, type: "leviathan",
+        waypoints: [
+          { x: 660,  y: 700  },
+          { x: 1020, y: 180  },
+          { x: 1300, y: 700  },
+          { x: 1020, y: 1200 },
+        ],
+        wpIdx: 0, speed: 42, hitR: 42, hearingDist: 780, alertDist: 580 },
     ],
     pods: [{ x: 1650, y: 1180, id: "noah", rescued: false, revealTimer: 0, character: "NOAH", commsLine: '"Dad? Is that you?"' }],
     letters: ["N","O","A","H"],
