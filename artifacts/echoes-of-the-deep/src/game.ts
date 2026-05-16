@@ -5077,6 +5077,11 @@ class EchoesGame {
     const boosting = this.keys["ShiftLeft"] || this.keys["ShiftRight"];
 
     // ── Raw key input axes ──
+    // SAFETY: No Leviathan state (_updateLeviathanAI / updateLeviathan) ever
+    // modifies this.keys, this.smoothFwd, this.smoothSide, this.pvx, or this.pvy
+    // in a way that restricts player motion. WASD always drives the sub during
+    // PLAYING state regardless of Leviathan patrol / alert / hunt / attacking.
+    // The only intentional thrust suppression is engineCutActive (Q key, below).
     const rawFwd  = (this.keys["KeyW"] || this.keys["ArrowUp"]    ? 1 : 0)
                   - (this.keys["KeyS"] || this.keys["ArrowDown"]  ? 1 : 0);
     const rawSide = (this.keys["KeyD"] || this.keys["ArrowRight"] ? 1 : 0)
@@ -5810,7 +5815,7 @@ class EchoesGame {
     if (this.lvlIdx === 2) {
       this.levPulseTimer -= dt;
       if (this.levPulseTimer <= 0) {
-        this.levPulseTimer = 8000; this.levBlocked = true; this.glitchTimer = 1400;
+        this.levPulseTimer = 8000; this.levBlocked = true; this.glitchTimer = 550;
         setTimeout(() => { this.levBlocked = false; }, 1100);
         this.showSub("[ LEVIATHAN PULSE — SONAR DISRUPTED ]");
       }
@@ -7393,6 +7398,32 @@ class EchoesGame {
       const pulse = 0.15 + Math.sin(Date.now() / 320) * 0.12;
       ctx.fillStyle = `rgba(255,0,0,${pulse})`;
       ctx.fillRect(0, 0, GAME_W, panelY);
+    }
+
+    // Persistent Engine Cut badge — stays visible as long as Q is toggled on so
+    // players always know thrust is disabled (one-time subtitle is not enough).
+    if (this.engineCutActive) {
+      const pulse = 0.55 + Math.abs(Math.sin(Date.now() / 600)) * 0.45;
+      const badgeX = GAME_W / 2 - 72;
+      const badgeY = 48;
+      ctx.save();
+      ctx.globalAlpha = pulse;
+      ctx.fillStyle = "rgba(180,0,0,0.82)";
+      ctx.strokeStyle = "#FF4444";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.roundRect(badgeX, badgeY, 144, 22, 4);
+      ctx.fill();
+      ctx.stroke();
+      ctx.globalAlpha = pulse;
+      ctx.fillStyle = "#FFCCCC";
+      ctx.shadowColor = "#FF4444";
+      ctx.shadowBlur = 8;
+      ctx.font = "bold 11px monospace";
+      ctx.textAlign = "center";
+      ctx.fillText("\u26A0 ENGINE CUT — COASTING SILENT", GAME_W / 2, badgeY + 15);
+      ctx.shadowBlur = 0;
+      ctx.restore();
     }
 
     // Dashboard brightness dip: dim the control panel area when Leviathan is Hunt/Attack;
