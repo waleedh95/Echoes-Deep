@@ -1,0 +1,250 @@
+# ECHOES OF THE DEEP — REALISTIC SUBMARINE INTERIOR PROMPT
+
+## TASK
+Redesign the submarine interior/cockpit in Echoes of the Deep to look like a real, detailed, physical submarine control room. Remove any flat, card-like, or UI-panel aesthetic. The interior must feel like you are sitting inside a real metal submarine vessel — dark, cramped, industrial, with real physical depth and dimension. Reference: the cockpit in the image provided — a curved porthole window frame, physical dashboard with real buttons and screens, dark metal walls closing in around you.
+
+---
+
+## WHAT TO REMOVE
+- No flat colored rectangles acting as a "dashboard"
+- No card-style UI panels
+- No clean modern UI aesthetic
+- No floating 2D elements pretending to be 3D
+- No symmetric, evenly spaced button grids that look like a website
+
+---
+
+## WHAT THE INTERIOR MUST LOOK LIKE
+
+### Overall Feeling
+The player is sitting inside a cramped, dark, military-grade deep-sea submarine. The interior is:
+- Made of dark brushed steel and aged metal — color palette: very dark grey (#1a1a1a), dark olive (#2a2d1e), rusted brown-black accents
+- Barely lit — the only light sources are the glow of instrument screens, red warning lamps, and the sonar display
+- Asymmetric and cluttered — real submarines are not clean. There are pipes, bolts, worn surfaces, scratches
+- The interior frame is always visible at the bottom and sides of the screen — it does not move. Only the view through the porthole moves with the mouse.
+
+---
+
+## PORTHOLE WINDOW (The Main Viewport)
+
+- The window the player looks through is a thick oval/rounded rectangle shape — like a real submarine porthole
+- The frame around it is thick brushed dark metal — at least 60px thick on all sides
+- The frame has visible bolts at regular intervals around the oval (8–12 bolts, small circles, metallic)
+- The glass itself has a very subtle dark tint and a faint reflection/glare highlight on the upper-left area (a curved white highlight line, opacity 0.08) — to make it feel like real glass
+- Around the porthole frame: scratches, slight rust streaks, wear marks (use CSS box-shadow and border techniques or canvas drawing)
+- The porthole is NOT centered — it sits slightly above center on screen, leaving more dashboard space below
+
+---
+
+## DASHBOARD — LEFT SIDE
+
+Build these physical instruments on the LEFT side of the dashboard:
+
+### Depth Gauge (Analog)
+- A circular analog dial — like a clock but measures depth (0 to 11,000 meters)
+- Dark glass face, white tick marks, red needle pointing to current depth
+- Bezel: thick silver ring around it
+- Label below: "DEPTH (M)" in small stencil font
+- The needle slowly moves as the submarine descends/ascends
+
+### Oxygen Pressure Gauge (Analog)
+- Same style as depth gauge but smaller
+- Needle sweeps from green zone (full) to red zone (critical)
+- Glass face with a subtle internal glow — green when safe, shifts to amber then red as oxygen drops
+- Label: "O2 PRESSURE"
+- This REPLACES the flat O2 bar from the previous HUD
+
+### Hull Integrity Indicator
+- A vertical bar gauge — like a thermometer
+- Made of segmented LED-style blocks (10 segments)
+- Full = all green segments lit. Damage = segments go dark from top down
+- Housed in a rectangular metal casing with a scratched label: "HULL INTEGRITY"
+
+### Warning Light Panel
+- 4 small circular indicator lights in a 2x2 grid
+- Labels: "OXYGEN", "HULL", "NOISE", "THREAT"
+- Normally dark/off. Each light glows RED when that system reaches critical level
+- Lights have a slight lens flare effect — they look like real physical bulbs behind glass covers
+
+---
+
+## DASHBOARD — CENTER
+
+### Sonar/Radar Display (The Centerpiece)
+- A large circular screen — the most prominent instrument
+- Dark screen with a green phosphor glow (like old radar screens)
+- A rotating sweep line (like a clock hand) sweeps around continuously — green, leaving a fading trail
+- When a sonar ping is fired: the sweep line PULSES outward from center, then returns to normal sweep
+- Detected objects appear as green blips on this screen at their correct bearing and approximate distance
+- Enemies appear as RED blips — they flicker and distort
+- Screen bezel: thick rounded metal casing, slightly recessed into the dashboard
+- Screen has visible scan lines and a subtle screen glare reflection
+- Label plate below screen: "SONAR — ACTIVE MODE" on a small metal nameplate
+
+### Physical Buttons Below Sonar (Center Console)
+- 3 large physical buttons in a row:
+  - Left button: "PING" — glows blue when pressed, labeled with sonar wave icon
+  - Center button: "FLARE" — glows orange, labeled with flame icon  
+  - Right button: "BOOST" — glows red, labeled with arrow icon
+- Buttons are 3D — they have a raised physical appearance (CSS box-shadow to simulate depth), not flat
+- When pressed: the button visually DEPRESSES (moves down 2px, shadow reduces)
+- Between buttons: small metal dividers/ridges
+
+### Throttle Lever (Center-Left of console)
+- A physical lever/joystick shape
+- Dark handle, metal shaft
+- Position changes visually when boost is active (leans forward)
+
+---
+
+## DASHBOARD — RIGHT SIDE
+
+### Noise Meter (Physical Version)
+- A horizontal VU-meter style display — like a sound level meter in a recording studio
+- Multiple vertical bar segments that light up from left (green) to right (red)
+- When noise level is low: only left green bars glow
+- When noise is high: bars fill up to orange then red
+- The meter REACTS in real-time — it bounces with each sound
+- Housed in a rectangular metal panel labeled "ACOUSTIC SIGNATURE"
+- Has a small needle that peaks when a loud sound is made, then slowly falls back
+
+### Clock / Mission Timer
+- A small analog clock face (purely aesthetic — it runs normally)
+- Or a digital readout showing elapsed mission time in green LED digits: "00:14:32"
+- Label: "MISSION ELAPSED"
+
+### Communication Screen (Small)
+- A small rectangular screen (like an old CRT monitor, slightly convex surface)
+- Shows static/noise by default (animated CSS or canvas noise pattern)
+- When a survivor comms in: their audio waveform appears on screen as a green oscilloscope line
+- Label: "COMMS — ENCRYPTED"
+- Has a small antenna/wire detail coming out of the top
+
+### Flare Counter
+- 3 small physical slots/holders — like ammunition in a belt
+- Each slot contains a glowing orange cylinder (the flare)
+- When a flare is used: that cylinder goes dark
+- Label: "FLARE RESERVES"
+
+---
+
+## SIDE WALLS (Left and Right Edges of Screen)
+
+The walls of the submarine are visible on the left and right edges of the screen — they close in, giving the sense of a cramped space:
+
+### Left Wall
+- Vertical pipe running top to bottom — dark metal, cylindrical (use border-radius)
+- A small electrical panel with 4 toggle switches (visual only) — some flipped up, some down
+- A fire extinguisher shape mounted to the wall (red cylinder, small)
+- Wiring/cable bundle running horizontally across mid-wall
+
+### Right Wall
+- A small emergency placard (rectangle with orange border) — label: "EMERGENCY PROCEDURES"
+- A pressure valve handle (circular wheel shape) mounted to wall
+- Scratched metal texture with faint horizontal lines
+- A small blinking green LED light (power indicator — blinks every 2 seconds)
+
+---
+
+## CEILING STRIP (Top of Interior Frame)
+
+A narrow strip of ceiling visible above the porthole:
+- Dark metal with a single strip of dim red lighting running across (emergency lighting)
+- A small mounted camera or sensor in the top-center (cylindrical shape, pointing forward)
+- One small panel with 2 toggle switches
+
+---
+
+## MATERIALS & TEXTURES
+
+Since this is browser-rendered (HTML/CSS/Canvas/Three.js), simulate physical materials using:
+
+```css
+/* Dark brushed metal surface */
+background: linear-gradient(135deg, #1c1c1c 0%, #2a2a2a 40%, #1a1a1a 60%, #222222 100%);
+box-shadow: inset 0 2px 4px rgba(255,255,255,0.05), inset 0 -2px 4px rgba(0,0,0,0.5);
+
+/* Raised button (unpressed) */
+box-shadow: 0 4px 6px rgba(0,0,0,0.8), 0 2px 0px rgba(255,255,255,0.05), inset 0 1px 0 rgba(255,255,255,0.1);
+
+/* Pressed button state */
+box-shadow: 0 1px 2px rgba(0,0,0,0.8), inset 0 2px 4px rgba(0,0,0,0.5);
+transform: translateY(2px);
+
+/* Screen glow (sonar/comms) */
+box-shadow: 0 0 20px rgba(0,255,100,0.3), inset 0 0 30px rgba(0,0,0,0.8);
+background: radial-gradient(ellipse at center, #001a00 0%, #000800 100%);
+
+/* Warning light (on) */
+box-shadow: 0 0 8px 3px rgba(255,50,50,0.8), inset 0 0 4px rgba(255,100,100,0.5);
+background: radial-gradient(circle, #ff6666 30%, #cc0000 100%);
+
+/* Porthole glass */
+background: radial-gradient(ellipse at 35% 35%, rgba(255,255,255,0.03) 0%, rgba(0,0,0,0) 60%);
+border: 8px solid #111;
+box-shadow: inset 0 0 60px rgba(0,0,0,0.9), 0 0 0 4px #0a0a0a, 0 0 0 8px #1a1a1a;
+```
+
+---
+
+## AMBIENT INTERIOR LIGHTING
+
+- The interior is NOT brightly lit — it is dark with instrument glow being the primary light source
+- Sonar screen casts a faint green glow onto the dashboard surface around it
+- Warning lights when active cast a faint red glow that bleeds onto nearby surfaces
+- The porthole window casts NO light into the interior (the outside is dark)
+- A very faint red strip light from the ceiling casts dim red across the top of the dashboard
+- When hull takes damage: all interior lights flash bright white once, then return to red emergency lighting for 2 seconds
+
+---
+
+## ANIMATIONS
+
+All instruments must be ALIVE — nothing is static:
+
+| Instrument | Animation |
+|---|---|
+| Sonar sweep line | Continuous rotation, 4 seconds per full sweep |
+| Depth gauge needle | Slowly moves as submarine depth changes |
+| O2 gauge needle | Continuously depletes, speeds up when boosting |
+| Noise meter bars | Real-time reactive — bounces with every sound event |
+| Warning lights | Pulse (not flash) when active — slow 1s on/off cycle |
+| Comms screen | Constant low-level static animation |
+| Flare slots | Glow pulses softly on remaining flares |
+| Boost button | Glows red and vibrates slightly when boost is active |
+| Hull integrity bars | Flicker briefly when damage is taken |
+| Small ceiling LED | Slow 2-second blink |
+
+---
+
+## LAYOUT MEASUREMENTS (for implementation)
+
+```
+Total screen: 1280 x 720
+
+Porthole viewport:
+  - Position: centered horizontally, top at y=30, bottom at y=500
+  - Shape: rounded rectangle, border-radius 40%
+  - This is where the Three.js 3D scene renders
+
+Dashboard area:
+  - Full width, from y=500 to y=720 (220px tall)
+  - Left panel (instruments): x=0 to x=320
+  - Center panel (sonar + buttons): x=320 to x=960
+  - Right panel (noise + comms): x=960 to x=1280
+
+Side wall strips:
+  - Left wall: x=0 to x=80, full height
+  - Right wall: x=1200 to x=1280, full height
+
+Ceiling strip:
+  - Full width, y=0 to y=30
+```
+
+---
+
+## FINAL INSTRUCTION
+
+Build the submarine interior as a rich, physical, realistic control room. Every instrument must look like it belongs in a real submarine — analog dials, physical buttons with depth, glowing screens, worn metal surfaces, pipes and wiring. The interior frame is always visible and never moves. Only what is seen THROUGH the porthole window moves with the player's mouse look. The atmosphere must be claustrophobic, dark, and industrial. The player should feel like they are really sitting inside a machine at the bottom of the ocean — not looking at a game UI.
+
+Do not simplify. Do not flatten. Build every instrument described above.
