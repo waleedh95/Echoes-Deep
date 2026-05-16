@@ -869,6 +869,61 @@ class AudioSys {
     };
   }
 
+  // ── LEVIATHAN RETREAT — muted receding growl fired on Hunt→Patrol (signal lost) ──
+  leviathanRetreat() {
+    if (!this.ctx || !this.master) return;
+    const ctx = this.ctx;
+    const t0 = ctx.currentTime;
+    const dur = 2.2;
+
+    // Output at low gain — creature is receding
+    const out = ctx.createGain();
+    out.gain.setValueAtTime(0.18, t0);
+    out.gain.linearRampToValueAtTime(0.12, t0 + 0.4);
+    out.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+
+    // Heavy lowpass — muffled by distance
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.setValueAtTime(280, t0);
+    lp.frequency.exponentialRampToValueAtTime(140, t0 + dur);
+    lp.Q.value = 0.8;
+    out.connect(lp); lp.connect(this.master);
+
+    // Sub-bass: starts low, sweeps further down (creature moving away)
+    const sub = ctx.createOscillator();
+    sub.type = "sine";
+    sub.frequency.setValueAtTime(55, t0);
+    sub.frequency.exponentialRampToValueAtTime(22, t0 + dur);
+    const subG = ctx.createGain(); subG.gain.value = 0.6;
+    sub.connect(subG); subG.connect(out);
+    sub.start(t0); sub.stop(t0 + dur);
+
+    // Sawtooth growl — slow LFO snarl, fades quickly
+    const saw = ctx.createOscillator();
+    saw.type = "sawtooth";
+    saw.frequency.setValueAtTime(72, t0);
+    saw.frequency.exponentialRampToValueAtTime(30, t0 + dur);
+    const lfo = ctx.createOscillator();
+    lfo.type = "sine"; lfo.frequency.value = 5;
+    const lfoG = ctx.createGain(); lfoG.gain.value = 10;
+    lfo.connect(lfoG); lfoG.connect(saw.frequency);
+    const sawG = ctx.createGain(); sawG.gain.value = 0.28;
+    saw.connect(sawG); sawG.connect(out);
+    saw.start(t0); saw.stop(t0 + dur);
+    lfo.start(t0); lfo.stop(t0 + dur);
+
+    // Clean up
+    saw.onended = () => {
+      try {
+        sub.disconnect(); subG.disconnect();
+        saw.disconnect(); sawG.disconnect();
+        lfo.disconnect(); lfoG.disconnect();
+        out.disconnect(); lp.disconnect();
+      } catch { /* nodes already disconnected */ }
+    };
+  }
+
   // ── LEVIATHAN DETECTION SCREECH — sharp alien shriek fired on Patrol→Alert ──
   leviathanDetectionScreech() {
     if (!this.ctx || !this.master) return;
@@ -4158,6 +4213,11 @@ class EchoesGame {
             e.state = "patrol";
             e.lostSignalTimer = 0;
             e.lastSoundOrigin = undefined;
+            this.showSub("[ LEVIATHAN LOST SIGNAL — YOU SURVIVED ]", 3000);
+            this.shakeTimer = 400;
+            this.shakeDuration = 400;
+            this.shakeIntensity = 0.03;
+            if (this.audioReady) this.audio.leviathanRetreat();
             break;
           }
         } else {
