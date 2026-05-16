@@ -5165,6 +5165,62 @@ class EchoesGame {
         ctx.stroke();
       }
 
+      // Needle (spring-animated, hull track) — clipped to dial face
+      {
+        const needleA   = SA + hF * SW;
+        const needleLen = DR - 16;
+        const tailLen   = 7;
+        ctx.save();
+        ctx.beginPath(); ctx.arc(DCX, DCY, DR, 0, Math.PI * 2); ctx.clip();
+        ctx.translate(DCX, DCY); ctx.rotate(needleA);
+        ctx.strokeStyle = 'rgba(0,0,0,0.4)'; ctx.lineWidth = 2.5;
+        ctx.beginPath(); ctx.moveTo(1.2, tailLen); ctx.lineTo(1.2, -needleLen); ctx.stroke();
+        ctx.fillStyle = hCol;
+        ctx.shadowColor = hCol; ctx.shadowBlur = 5;
+        ctx.beginPath();
+        ctx.moveTo(-2.0, tailLen); ctx.lineTo(2.0, tailLen);
+        ctx.lineTo(0.5, -needleLen); ctx.lineTo(-0.5, -needleLen);
+        ctx.closePath(); ctx.fill();
+        ctx.shadowBlur = 0;
+        ctx.restore();
+      }
+
+      // Hull damage crack overlay (hull < 25%) — clipped to dial face
+      if (this.gaugeDisplay.hull < 25) {
+        ctx.save();
+        ctx.beginPath(); ctx.arc(DCX, DCY, DR, 0, Math.PI * 2); ctx.clip();
+        const crackR  = DR;
+        const crackCX = DCX, crackCY = DCY;
+        const cracks = [
+          { x1:  4, y1:  2, x2:  crackR - 4,  y2: -crackR + 8  },
+          { x1:  4, y1:  2, x2:  crackR - 6,  y2:  crackR - 12 },
+          { x1:  4, y1:  2, x2: -crackR + 10, y2:  crackR - 6  },
+          { x1:  4, y1:  2, x2: -crackR + 8,  y2: -crackR + 10 },
+          { x1: Math.round((crackR - 4) * 0.45) + 4,
+            y1: Math.round((-crackR + 8) * 0.45) + 2,
+            x2: Math.round((crackR - 4) * 0.45) + 4 + 10,
+            y2: Math.round((-crackR + 8) * 0.45) + 2 - 14 },
+          { x1: Math.round((crackR - 4) * 0.6) + 4,
+            y1: Math.round((-crackR + 8) * 0.6) + 2,
+            x2: Math.round((crackR - 4) * 0.6) + 4 + 16,
+            y2: Math.round((-crackR + 8) * 0.6) + 2 + 6 },
+        ];
+        ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+        ctx.lineWidth = 0.8;
+        ctx.shadowColor = 'rgba(255,80,0,0.4)';
+        ctx.shadowBlur = 3;
+        for (const c of cracks) {
+          ctx.beginPath();
+          ctx.moveTo(crackCX + c.x1, crackCY + c.y1);
+          ctx.lineTo(crackCX + c.x2, crackCY + c.y2);
+          ctx.stroke();
+        }
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = 'rgba(180,20,0,0.12)';
+        ctx.beginPath(); ctx.arc(crackCX, crackCY, crackR, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
+      }
+
       // Centre hub
       const hubG = ctx.createRadialGradient(DCX-2, DCY-2, 0, DCX, DCY, 9);
       hubG.addColorStop(0, '#3a1010'); hubG.addColorStop(1, '#0e0404');
