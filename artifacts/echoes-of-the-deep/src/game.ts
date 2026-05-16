@@ -392,7 +392,29 @@ interface LetterEntity {
   revealAlpha: number;         // 0..1 — proximity-driven fade-in; 0 = invisible
 }
 
-type GameState = "MENU" | "PLAYING" | "CUTSCENE" | "DISCOVERY" | "COLLAPSE" | "GAME_OVER" | "LEVEL_TRANSITION";
+type GameState = "MENU" | "STORE" | "PLAYING" | "CUTSCENE" | "DISCOVERY" | "COLLAPSE" | "GAME_OVER" | "LEVEL_TRANSITION";
+
+// ============================================================
+// PLAYER PROFILE (in-memory, set from store/auth)
+// ============================================================
+interface PlayerProfile {
+  username: string;
+  echoBalance: number;
+  bonusFlares: number;
+  sonarLevel: number;
+}
+
+const SONAR_CHARGE_RATES = [12.5, 15.38, 20.0, 28.57, 50.0]; // units/s for levels 0-4
+let currentPlayerProfile: PlayerProfile | null = null;
+
+export function setPlayerProfile(profile: PlayerProfile | null): void {
+  currentPlayerProfile = profile;
+  window.dispatchEvent(new CustomEvent("echoes:profile-changed", { detail: profile }));
+}
+
+export function getPlayerProfile(): PlayerProfile | null {
+  return currentPlayerProfile;
+}
 
 // ============================================================
 // AUDIO
@@ -3297,6 +3319,11 @@ class EchoesGame {
   private engineCutActive = false;  // L2 stealth: Q toggles engine cut (zero thrust, near-silent)
   private o2 = 100; private flares = 3;
   private invTimer = 0; private glitchTimer = 0;
+  // Store-driven profile values (read at game start)
+  private bonusFlares = 0;
+  private sonarChargeRate = SONAR_CHARGE_RATES[0]; // units/s — level 0 = 12.5 (8s recovery)
+  // STORE button hitbox in game coords (1280x720), updated each renderMenu()
+  private storeBtnRect: { x: number; y: number; w: number; h: number } | null = null;
 
   // Noise
   private noise = 0; private alarmTimer = 0;
@@ -3634,6 +3661,11 @@ class EchoesGame {
     window.addEventListener("keydown", (e) => {
       this.keys[e.code] = true;
       this.ensureAudio();
+      if (this.state === "MENU" && e.code === "KeyS") {
+        this.state = "STORE";
+        window.dispatchEvent(new CustomEvent("echoes:store-open"));
+        return;
+      }
       if (this.state === "MENU" && (e.code === "Space" || e.code === "Enter")) this.startGame();
       else if (this.state === "CUTSCENE" && (e.code === "Space" || e.code === "Enter")) this.advanceCS();
       else if (this.state === "GAME_OVER" && e.code === "Space") {
@@ -3664,12 +3696,28 @@ class EchoesGame {
       this.yaw -= e.movementX * sens;
     });
 
-    this.threeCanvas.addEventListener("mousedown", () => {
+    this.threeCanvas.addEventListener("mousedown", (e) => {
       this.ensureAudio();
       this.mouseHeld = true;
       this.mouseDownAt = Date.now();
-      if (this.state === "MENU") this.startGame();
-      else if (this.state === "CUTSCENE") this.advanceCS();
+      if (this.state === "MENU") {
+        // Translate viewport coords → game coords (1280x720). Canvas is uniformly scaled & centered.
+        const rect = this.threeCanvas.getBoundingClientRect();
+        const gx = (e.clientX - rect.left) / rect.width * GAME_W;
+        const gy = (e.clientY - rect.top)  / rect.height * GAME_H;
+        const r = this.storeBtnRect;
+        if (r && gx >= r.x && gx <= r.x + r.w && gy >= r.y && gy <= r.y + r.h) {
+          this.state = "STORE";
+          window.dispatchEvent(new CustomEvent("echoes:store-open"));
+          return;
+        }
+        this.startGame();
+      } else if (this.state === "CUTSCENE") this.advanceCS();
+    });
+
+    // When store overlay closes, return to MENU state
+    window.addEventListener("echoes:store-close", () => {
+      if (this.state === "STORE") this.state = "MENU";
     });
 
     this.threeCanvas.addEventListener("mouseup", () => {
@@ -3714,7 +3762,12 @@ class EchoesGame {
     // Reset 2D state
     this.px = def.playerStart.x; this.py = def.playerStart.y;
     this.pvx = this.pvy = 0;
-    this.o2 = def.o2Start; this.flares = def.flares ?? 3;
+    // Apply player profile: bonus flares stack on top of level defaults; sonar level sets charge rate.
+    const profile = getPlayerProfile();
+    this.bonusFlares = profile?.bonusFlares ?? 0;
+    const lvl = Math.max(0, Math.min(4, profile?.sonarLevel ?? 0));
+    this.sonarChargeRate = SONAR_CHARGE_RATES[lvl];
+    this.o2 = def.o2Start; this.flares = (def.flares ?? 3) + this.bonusFlares;
     this.invTimer = 0; this.glitchTimer = 0;
     this.noise = 0; this.alarmTimer = 0; this.lvlTime = 0;
     this.soundEvents = []; this.levSpeedNoiseTimer = 0;
@@ -6277,7 +6330,7 @@ class EchoesGame {
   private updateDashboard(dt: number) {
     const dtS = dt / 1000;
     // Sonar charge regenerates over time
-    this.sonarCharge = Math.min(100, this.sonarCharge + 14 * dtS);
+    this.sonarCharge = Math.min(100, this.sonarCharge + this.sonarChargeRate * dtS);
     // Hull failure — trigger game over when integrity reaches zero (same path as O2 depletion)
     if (this.hullIntegrity <= 0 && !this.transitioning) {
       this.gameOverReason = "hull";
@@ -7781,7 +7834,7 @@ class EchoesGame {
     // Clear HUD canvas every frame
     this.hudCtx.clearRect(0, 0, GAME_W, GAME_H);
 
-    if (this.state === "MENU") {
+    if (this.state === "MENU" || this.state === "STORE") {
       this.renderer.render(this.scene, this.camera);
       this.renderMenu();
       return;
@@ -9266,19 +9319,93 @@ class EchoesGame {
     // Panel content — blinking prompt + controls
     const CY = PANEL_Y + 30;
 
+    // ── Menu actions: BEGIN (Space) | SHOP (S) ─────────────────────────────
     if (Math.sin(t * 2.4) > 0) {
       ctx.shadowColor = '#00FF88'; ctx.shadowBlur = 14;
       ctx.fillStyle = 'rgba(0,255,136,0.92)'; ctx.font = 'bold 17px monospace'; ctx.textAlign = 'center';
       ctx.fillText('[ PRESS SPACE OR CLICK TO BEGIN ]', GAME_W/2, CY + 4);
       ctx.shadowBlur = 0;
     }
+    // Always-visible SHOP prompt (sits right below the BEGIN prompt so the
+    // user cannot miss it).
+    ctx.shadowColor = '#00CCFF'; ctx.shadowBlur = 10;
+    ctx.fillStyle = 'rgba(0,232,255,0.92)'; ctx.font = 'bold 15px monospace'; ctx.textAlign = 'center';
+    ctx.fillText('◈  PRESS  [ S ]  TO OPEN THE SHOP  ◈', GAME_W/2, CY + 24);
+    ctx.shadowBlur = 0;
 
     ctx.fillStyle = 'rgba(160,148,100,0.48)'; ctx.font = '10px monospace'; ctx.textAlign = 'center';
     const ctrls = [
       'WASD — MOVE    SHIFT — BOOST    MOUSE — LOOK AROUND',
       'CLICK — SONAR PING    HOLD 1s — LARGE PING    F — FLARE    E — DOCK',
     ];
-    ctrls.forEach((c, i) => ctx.fillText(c, GAME_W/2, CY + 30 + i * 16));
+    ctrls.forEach((c, i) => ctx.fillText(c, GAME_W/2, CY + 50 + i * 16));
+
+    // ── SUPPLY CACHE (STORE) BUTTON — top-right ────────────────────────────
+    const profile = getPlayerProfile();
+    const BTN_W = 200, BTN_H = 44;
+    const BTN_X = GAME_W - BTN_W - 28;
+    const BTN_Y = 28;
+    this.storeBtnRect = { x: BTN_X, y: BTN_Y, w: BTN_W, h: BTN_H };
+
+    // Button pulse
+    const pulse = 0.5 + 0.5 * Math.sin(t * 2.2);
+    ctx.save();
+    // Glow halo
+    ctx.shadowColor = '#00CCFF'; ctx.shadowBlur = 14 + pulse * 10;
+    // Button body
+    ctx.fillStyle = 'rgba(0,28,48,0.85)';
+    ctx.fillRect(BTN_X, BTN_Y, BTN_W, BTN_H);
+    ctx.shadowBlur = 0;
+    // Border
+    ctx.strokeStyle = `rgba(0,232,255,${0.55 + pulse * 0.3})`;
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(BTN_X + 0.5, BTN_Y + 0.5, BTN_W - 1, BTN_H - 1);
+    // Inner border accent
+    ctx.strokeStyle = 'rgba(0,232,255,0.18)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(BTN_X + 3.5, BTN_Y + 3.5, BTN_W - 7, BTN_H - 7);
+    // Corner brackets (wireframe aesthetic)
+    ctx.strokeStyle = '#00E8FF'; ctx.lineWidth = 1.5;
+    const BR = 8;
+    ctx.beginPath();
+    ctx.moveTo(BTN_X, BTN_Y + BR); ctx.lineTo(BTN_X, BTN_Y); ctx.lineTo(BTN_X + BR, BTN_Y);
+    ctx.moveTo(BTN_X + BTN_W - BR, BTN_Y); ctx.lineTo(BTN_X + BTN_W, BTN_Y); ctx.lineTo(BTN_X + BTN_W, BTN_Y + BR);
+    ctx.moveTo(BTN_X + BTN_W, BTN_Y + BTN_H - BR); ctx.lineTo(BTN_X + BTN_W, BTN_Y + BTN_H); ctx.lineTo(BTN_X + BTN_W - BR, BTN_Y + BTN_H);
+    ctx.moveTo(BTN_X + BR, BTN_Y + BTN_H); ctx.lineTo(BTN_X, BTN_Y + BTN_H); ctx.lineTo(BTN_X, BTN_Y + BTN_H - BR);
+    ctx.stroke();
+    // Label
+    ctx.shadowColor = '#00CCFF'; ctx.shadowBlur = 10;
+    ctx.fillStyle = '#00E8FF';
+    ctx.font = 'bold 14px monospace'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText('◈  SUPPLY CACHE', BTN_X + BTN_W / 2, BTN_Y + BTN_H / 2);
+    ctx.shadowBlur = 0;
+    ctx.textBaseline = 'alphabetic';
+    ctx.restore();
+
+    // ── Echo balance pill (only when authenticated) ────────────────────────
+    if (profile) {
+      const PILL_W = 200, PILL_H = 28;
+      const PILL_X = BTN_X;
+      const PILL_Y = BTN_Y + BTN_H + 10;
+      ctx.save();
+      ctx.fillStyle = 'rgba(0,16,28,0.85)';
+      ctx.fillRect(PILL_X, PILL_Y, PILL_W, PILL_H);
+      ctx.strokeStyle = 'rgba(0,232,255,0.35)'; ctx.lineWidth = 1;
+      ctx.strokeRect(PILL_X + 0.5, PILL_Y + 0.5, PILL_W - 1, PILL_H - 1);
+      // Username (left)
+      ctx.fillStyle = 'rgba(127,169,185,0.85)';
+      ctx.font = '10px monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+      const uname = profile.username.length > 14 ? profile.username.slice(0, 13) + '…' : profile.username;
+      ctx.fillText(uname.toUpperCase(), PILL_X + 10, PILL_Y + PILL_H / 2);
+      // Balance (right)
+      ctx.shadowColor = '#00CCFF'; ctx.shadowBlur = 8;
+      ctx.fillStyle = '#00E8FF';
+      ctx.font = 'bold 13px monospace'; ctx.textAlign = 'right';
+      ctx.fillText(`◈ ${profile.echoBalance.toLocaleString()}`, PILL_X + PILL_W - 10, PILL_Y + PILL_H / 2);
+      ctx.shadowBlur = 0;
+      ctx.textBaseline = 'alphabetic';
+      ctx.restore();
+    }
 
     // ── Mission Log ── (visible only after a completed run)
     // Lazy-init: parse localStorage once per session, cache result thereafter

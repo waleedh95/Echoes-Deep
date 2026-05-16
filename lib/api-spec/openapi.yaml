@@ -10,6 +10,10 @@ servers:
 tags:
   - name: health
     description: Health operations
+  - name: auth
+    description: Authentication operations
+  - name: store
+    description: In-game store operations
 paths:
   /healthz:
     get:
@@ -24,7 +28,150 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+
+  /auth/signup:
+    post:
+      operationId: signup
+      tags: [auth]
+      summary: Create a new account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthCredentials"
+      responses:
+        "201":
+          description: Account created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Invalid input
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: Username taken
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Login to an existing account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AuthCredentials"
+      responses:
+        "200":
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /auth/me:
+    get:
+      operationId: getMe
+      tags: [auth]
+      summary: Get current user profile
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: User profile
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UserProfile"
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /store/buy-item:
+    post:
+      operationId: buyItem
+      tags: [store]
+      summary: Purchase an in-game item with Echoes currency
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ItemPurchase"
+      responses:
+        "200":
+          description: Purchase successful
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PurchaseResult"
+        "402":
+          description: Insufficient Echoes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "400":
+          description: Invalid item
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
+  /store/claim-echoes:
+    post:
+      operationId: claimEchoes
+      tags: [store]
+      summary: Claim a dummy Echoes pack (demo mode — no real payment)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EchoClaim"
+      responses:
+        "200":
+          description: Echoes credited
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EchoClaimResult"
+        "400":
+          description: Invalid pack
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
   schemas:
     HealthStatus:
       type: object
@@ -34,3 +181,99 @@ components:
       required:
         - status
 
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required:
+        - error
+
+    AuthCredentials:
+      type: object
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+      required:
+        - username
+        - password
+
+    AuthResponse:
+      type: object
+      properties:
+        token:
+          type: string
+        username:
+          type: string
+      required:
+        - token
+        - username
+
+    UserProfile:
+      type: object
+      properties:
+        username:
+          type: string
+        echoBalance:
+          type: integer
+        bonusFlares:
+          type: integer
+        sonarLevel:
+          type: integer
+      required:
+        - username
+        - echoBalance
+        - bonusFlares
+        - sonarLevel
+
+    ItemPurchase:
+      type: object
+      properties:
+        itemType:
+          type: string
+        itemId:
+          type: string
+      required:
+        - itemType
+        - itemId
+
+    PurchaseResult:
+      type: object
+      properties:
+        echoBalance:
+          type: integer
+        bonusFlares:
+          type: integer
+        sonarLevel:
+          type: integer
+      required:
+        - echoBalance
+        - bonusFlares
+        - sonarLevel
+
+    EchoClaim:
+      type: object
+      properties:
+        packId:
+          type: string
+      required:
+        - packId
+
+    EchoClaimResult:
+      type: object
+      properties:
+        echoBalance:
+          type: integer
+        bonusFlares:
+          type: integer
+        sonarLevel:
+          type: integer
+        granted:
+          type: integer
+      required:
+        - echoBalance
+        - bonusFlares
+        - sonarLevel
+        - granted
